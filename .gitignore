@@ -48,3 +48,9 @@ Thumbs.db
 *.mov
 *.wmv
 
+# Local environment and database files
+.env
+uploads/
+prisma/*.db
+prisma/*.db-journal
+.claude/
