@@ -167,6 +167,7 @@ router.get(
         const reason = emdPending(t) ? "EMD pending" : notApproved(t) ? "Approval pending" : `${d} day(s) left`;
         return {
           id: t.id,
+          tenderId: `TENDER${String(t.tenderSeq).padStart(3, "0")}`,
           title: t.title,
           buyerLabel: t.customer?.organizationType?.trim() || "Unspecified",
           value: t.tenderValue ?? 0,

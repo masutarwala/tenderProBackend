@@ -353,12 +353,12 @@ router.get(
 );
 
 const outputSchema = z.object({
-  submitDate: z.coerce.date().optional(),
-  submitValue: z.number().optional(),
-  outcome: z.enum(["WIN", "LOST", "OTHER"]).optional(),
-  outcomeRemarks: z.string().optional(),
-  winningBidValue: z.number().optional(),
-  winner: z.string().optional(),
+  submitDate: z.coerce.date().nullable().optional(),
+  submitValue: z.number().nullable().optional(),
+  outcome: z.enum(["WIN", "LOST", "OTHER"]).nullable().optional(),
+  outcomeRemarks: z.string().nullable().optional(),
+  winningBidValue: z.number().nullable().optional(),
+  winner: z.string().nullable().optional(),
 });
 
 router.put(
