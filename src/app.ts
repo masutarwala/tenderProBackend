@@ -48,3 +48,5 @@ app.use("/api/reports", reportsRoutes);
 app.use("/api/checklist", checklistRoutes);
 
 app.use(errorHandler);
+
+export default app;
