@@ -35,7 +35,27 @@ router.patch(
   requireRole("BIDDER", "ADMIN"),
   asyncHandler(async (req: AuthedRequest, res) => {
     const data = updateSchema.parse(req.body);
-    const opp = await prisma.opportunityDetails.update({ where: { tenderId: req.params.tenderId }, data });
+    
+    const opp = await prisma.$transaction(async (tx) => {
+      const updatedOpp = await tx.opportunityDetails.update({
+        where: { tenderId: req.params.tenderId },
+        data,
+      });
+
+      const tender = await tx.tender.findUnique({
+        where: { id: req.params.tenderId },
+      });
+
+      if (tender && !tender.opportunityStatus) {
+        await tx.tender.update({
+          where: { id: req.params.tenderId },
+          data: { opportunityStatus: "DRAFT" },
+        });
+      }
+
+      return updatedOpp;
+    });
+
     await recordAudit(req, "UPDATE", "OpportunityDetails", opp.id, data);
     res.json(opp);
   })

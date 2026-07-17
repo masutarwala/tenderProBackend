@@ -1,11 +1,8 @@
--- CreateEnum
-CREATE TYPE "Role" AS ENUM ('EXTRACTOR', 'EVALUATOR', 'BIDDER', 'SALES_EXEC', 'SALES_MANAGER', 'FINANCE', 'CEO', 'ADMIN');
-
--- CreateEnum
+﻿-- CreateEnum
 CREATE TYPE "TenderType" AS ENUM ('HARDWARE', 'SOFTWARE', 'SERVICES');
 
 -- CreateEnum
-CREATE TYPE "BidStage" AS ENUM ('PROSPECT', 'OPPORTUNITY', 'CLOSED');
+CREATE TYPE "BidStage" AS ENUM ('EVALUATION', 'PREPARATION', 'SUBMISSION', 'CLOSED');
 
 -- CreateEnum
 CREATE TYPE "ProspectStatus" AS ENUM ('NEW', 'DROPPED', 'SHORTLISTED');
@@ -35,12 +32,25 @@ CREATE TYPE "EmdRefundStatus" AS ENUM ('INITIATED', 'IN_PROGRESS', 'RECEIVED', '
 CREATE TYPE "EmdRefundReason" AS ENUM ('WON_NOT_REQUIRED', 'LOST_PER_TERMS', 'BID_REJECTED', 'TECHNICAL_DISQUALIFICATION', 'OTHER');
 
 -- CreateTable
+CREATE TABLE "Role" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "description" TEXT,
+    "isSystem" BOOLEAN NOT NULL DEFAULT false,
+    "menuKeys" TEXT[] DEFAULT ARRAY[]::TEXT[],
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "Role_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "User" (
     "id" TEXT NOT NULL,
     "email" TEXT NOT NULL,
     "passwordHash" TEXT NOT NULL,
     "fullName" TEXT NOT NULL,
-    "role" "Role" NOT NULL,
+    "roleId" TEXT NOT NULL,
     "department" TEXT,
     "managerId" TEXT,
     "active" BOOLEAN NOT NULL DEFAULT true,
@@ -58,14 +68,32 @@ CREATE TABLE "Customer" (
     "alternateContact" TEXT,
     "billingAddress" TEXT,
     "shippingAddress" TEXT,
-    "industry" TEXT,
+    "industry" TEXT[] DEFAULT ARRAY[]::TEXT[],
     "organizationType" TEXT,
     "organizationSize" TEXT,
     "procurementNotes" TEXT,
+    "country" TEXT,
+    "state" TEXT,
+    "city" TEXT,
+    "address" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "Customer_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "CustomerContact" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "email" TEXT,
+    "phone" TEXT,
+    "designation" TEXT,
+    "customerId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "CustomerContact_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -145,6 +173,7 @@ CREATE TABLE "Document" (
     "id" TEXT NOT NULL,
     "entityType" TEXT NOT NULL,
     "entityId" TEXT NOT NULL,
+    "category" TEXT,
     "fileName" TEXT NOT NULL,
     "storageKey" TEXT NOT NULL,
     "mimeType" TEXT,
@@ -158,13 +187,15 @@ CREATE TABLE "Document" (
 -- CreateTable
 CREATE TABLE "Tender" (
     "id" TEXT NOT NULL,
+    "tenderSeq" SERIAL NOT NULL,
     "tenderRefNo" TEXT NOT NULL,
     "portalSource" TEXT,
     "title" TEXT NOT NULL,
     "description" TEXT,
+    "summary" TEXT,
     "customerId" TEXT,
     "tenderType" "TenderType" NOT NULL,
-    "bidStage" "BidStage" NOT NULL DEFAULT 'PROSPECT',
+    "bidStage" "BidStage" NOT NULL DEFAULT 'EVALUATION',
     "prospectStatus" "ProspectStatus" NOT NULL DEFAULT 'NEW',
     "opportunityStatus" "OpportunityStatus",
     "publishedDate" TIMESTAMP(3),
@@ -174,6 +205,19 @@ CREATE TABLE "Tender" (
     "bidValidityDays" INTEGER,
     "deliveryTimelineWeeks" INTEGER,
     "contractPeriodYears" INTEGER,
+    "tcNo" TEXT,
+    "sourceUrl" TEXT,
+    "country" TEXT,
+    "state" TEXT,
+    "city" TEXT,
+    "address" TEXT,
+    "tenderValue" DOUBLE PRECISION,
+    "biddingType" TEXT,
+    "isFreeTender" BOOLEAN NOT NULL DEFAULT false,
+    "keyword" TEXT,
+    "subIndustry" TEXT,
+    "companySubIndustry" TEXT,
+    "extractedCompanyName" TEXT,
     "extractorId" TEXT,
     "bidderId" TEXT,
     "salesExecId" TEXT,
@@ -368,8 +412,59 @@ CREATE TABLE "AuditLog" (
     CONSTRAINT "AuditLog_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "TenderUpdateChecklist" (
+    "id" TEXT NOT NULL,
+    "tenderId" TEXT NOT NULL,
+    "phase" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "order" INTEGER NOT NULL,
+    "checked" BOOLEAN NOT NULL DEFAULT false,
+    "remarks" TEXT,
+    "updatedById" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "TenderUpdateChecklist_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "TenderOutput" (
+    "id" TEXT NOT NULL,
+    "tenderId" TEXT NOT NULL,
+    "submitDate" TIMESTAMP(3),
+    "submitValue" DOUBLE PRECISION,
+    "outcome" TEXT,
+    "outcomeRemarks" TEXT,
+    "winningBidValue" DOUBLE PRECISION,
+    "winner" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "TenderOutput_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "MasterChecklistItem" (
+    "id" TEXT NOT NULL,
+    "phase" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "order" INTEGER NOT NULL,
+    "isDefault" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "MasterChecklistItem_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Role_name_key" ON "Role"("name");
+
 -- CreateIndex
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Tender_tenderSeq_key" ON "Tender"("tenderSeq");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Tender_tenderRefNo_key" ON "Tender"("tenderRefNo");
@@ -398,8 +493,17 @@ CREATE UNIQUE INDEX "EmdPayment_requirementId_key" ON "EmdPayment"("requirementI
 -- CreateIndex
 CREATE UNIQUE INDEX "EmdRefund_emdPaymentId_key" ON "EmdRefund"("emdPaymentId");
 
+-- CreateIndex
+CREATE UNIQUE INDEX "TenderOutput_tenderId_key" ON "TenderOutput"("tenderId");
+
+-- AddForeignKey
+ALTER TABLE "User" ADD CONSTRAINT "User_roleId_fkey" FOREIGN KEY ("roleId") REFERENCES "Role"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
 -- AddForeignKey
 ALTER TABLE "User" ADD CONSTRAINT "User_managerId_fkey" FOREIGN KEY ("managerId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "CustomerContact" ADD CONSTRAINT "CustomerContact_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "DecisionMatrixCriterion" ADD CONSTRAINT "DecisionMatrixCriterion_matrixId_fkey" FOREIGN KEY ("matrixId") REFERENCES "DecisionMatrix"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -466,3 +570,13 @@ ALTER TABLE "EmdRefund" ADD CONSTRAINT "EmdRefund_initiatedById_fkey" FOREIGN KE
 
 -- AddForeignKey
 ALTER TABLE "AuditLog" ADD CONSTRAINT "AuditLog_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TenderUpdateChecklist" ADD CONSTRAINT "TenderUpdateChecklist_tenderId_fkey" FOREIGN KEY ("tenderId") REFERENCES "Tender"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TenderUpdateChecklist" ADD CONSTRAINT "TenderUpdateChecklist_updatedById_fkey" FOREIGN KEY ("updatedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TenderOutput" ADD CONSTRAINT "TenderOutput_tenderId_fkey" FOREIGN KEY ("tenderId") REFERENCES "Tender"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+

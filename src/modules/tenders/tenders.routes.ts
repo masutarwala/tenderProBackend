@@ -527,8 +527,7 @@ router.post(
         where: { id: tender.id },
         data: {
           prospectStatus: "SHORTLISTED",
-          bidStage: "OPPORTUNITY",
-          opportunityStatus: "DRAFT",
+          bidStage: "EVALUATION",
           bidderId: body.bidderId,
           salesExecId: body.salesExecId,
           opportunityDetails: { create: { preparedById: body.bidderId } },

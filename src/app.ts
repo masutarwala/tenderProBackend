@@ -1,6 +1,5 @@
 import express from "express";
 import cors from "cors";
-import { env } from "./config/env";
 import { errorHandler } from "./middleware/errorHandler";
 
 import authRoutes from "./modules/auth/auth.routes";
@@ -20,10 +19,11 @@ import submissionsRoutes from "./modules/submissions/submissions.routes";
 import outcomesRoutes from "./modules/outcomes/outcomes.routes";
 import emdRoutes from "./modules/emd/emd.routes";
 import reportsRoutes from "./modules/reports/reports.routes";
+import checklistRoutes from "./modules/checklist/checklist.routes";
 
 export const app = express();
 
-app.use(cors({ origin: env.corsOrigin, credentials: true }));
+app.use(cors());
 app.use(express.json());
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
@@ -45,5 +45,6 @@ app.use("/api/submissions", submissionsRoutes);
 app.use("/api/outcomes", outcomesRoutes);
 app.use("/api/emd", emdRoutes);
 app.use("/api/reports", reportsRoutes);
+app.use("/api/checklist", checklistRoutes);
 
 app.use(errorHandler);

@@ -23,6 +23,7 @@ export function canTransitionProspect(from: ProspectStatus, to: ProspectStatus):
   return PROSPECT_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
-export function canTransitionOpportunity(from: OpportunityStatus, to: OpportunityStatus): boolean {
-  return OPPORTUNITY_TRANSITIONS[from]?.includes(to) ?? false;
+export function canTransitionOpportunity(from: OpportunityStatus | null | undefined, to: OpportunityStatus): boolean {
+  const current = from || "DRAFT";
+  return OPPORTUNITY_TRANSITIONS[current]?.includes(to) ?? false;
 }

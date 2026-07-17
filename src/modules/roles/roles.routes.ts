@@ -26,6 +26,7 @@ export const MENU_KEYS = [
   "pqi",
   "interest-criteria",
   "decision-matrices",
+  "checklist",
 ] as const;
 
 const roleSchema = z.object({

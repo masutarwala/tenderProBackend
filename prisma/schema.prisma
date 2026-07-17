@@ -16,8 +16,9 @@ enum TenderType {
 }
 
 enum BidStage {
-  PROSPECT
-  OPPORTUNITY
+  EVALUATION
+  PREPARATION
+  SUBMISSION
   CLOSED
 }
 
@@ -264,7 +265,7 @@ model Tender {
   customer      Customer?  @relation(fields: [customerId], references: [id])
 
   tenderType    TenderType
-  bidStage      BidStage   @default(PROSPECT)
+  bidStage      BidStage   @default(EVALUATION)
   prospectStatus ProspectStatus @default(NEW)
   opportunityStatus OpportunityStatus?
   publishedDate DateTime?
@@ -503,10 +504,11 @@ model TenderUpdateChecklist {
   id          String   @id @default(cuid())
   tenderId    String
   tender      Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  phase       String   // "EVALUATION" | "PREPARATION"
+  phase       String   // "EVALUATION" | "PREPARATION" | "OUTCOME"
   label       String
   order       Int
   checked     Boolean  @default(false)
+  remarks     String?
   updatedById String?  // who last flipped `checked` — see evaluation.routes.ts PUT handler
   updatedBy   User?    @relation(fields: [updatedById], references: [id])
   createdAt   DateTime @default(now())
@@ -526,3 +528,14 @@ model TenderOutput {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 }
+
+model MasterChecklistItem {
+  id        String   @id @default(cuid())
+  phase     String   // "EVALUATION" | "PREPARATION"
+  label     String
+  order     Int
+  isDefault Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+

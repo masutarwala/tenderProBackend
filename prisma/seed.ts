@@ -12,7 +12,7 @@ const DEFAULT_PASSWORD = "Passw0rd!";
 const SYSTEM_ROLES: Record<string, { description: string; menuKeys: string[] }> = {
   ADMIN: {
     description: "Full administrative access, including user, role, and master-data management.",
-    menuKeys: ["tenders", "evaluation", "approvals", "emd-payments", "emd-refunds", "emd-summary", "customers", "users", "roles", "pqi", "interest-criteria", "decision-matrices"],
+    menuKeys: ["tenders", "evaluation", "approvals", "emd-payments", "emd-refunds", "emd-summary", "ceo-dashboard", "customers", "users", "roles", "pqi", "interest-criteria", "decision-matrices", "checklist"],
   },
   EXTRACTOR: { description: "Extracts and uploads new tenders for evaluation.", menuKeys: ["tenders"] },
   EVALUATOR: { description: "Evaluates and shortlists tenders in the Prospect stage.", menuKeys: ["tenders", "evaluation", "interest-criteria"] },
@@ -27,7 +27,7 @@ async function upsertRole(name: string) {
   const config = SYSTEM_ROLES[name];
   return prisma.role.upsert({
     where: { name },
-    update: {},
+    update: { description: config.description, menuKeys: config.menuKeys },
     create: { name, description: config.description, menuKeys: config.menuKeys, isSystem: true },
   });
 }
@@ -122,7 +122,7 @@ async function main() {
         "Amended via corrigendum: delivery timeline 8->15 weeks, bid validity 180->90 days, data availability 99.999%->99.9999%.",
       customerId: customer.id,
       tenderType: "HARDWARE",
-      bidStage: "PROSPECT",
+      bidStage: "EVALUATION",
       prospectStatus: "NEW",
       publishedDate: new Date("2026-05-07"),
       preBidDate: new Date("2026-05-19T12:30:00"),
@@ -152,6 +152,54 @@ async function main() {
       },
     },
   });
+
+  console.log("Seeding master checklist items...");
+  const defaultEvaluationSteps = [
+    "Tender document review",
+    "Technical feasibility assessment",
+    "Compliance check (eligibility & EMD)",
+    "Financial analysis",
+    "Risk assessment",
+    "Go/No-Go decision",
+  ];
+  const defaultPreparationSteps = [
+    "NIT / RFP download",
+    "Pre-bid queries submission",
+    "Technical document preparation",
+    "Financial bid preparation",
+    "EMD arrangement",
+    "Document compilation & review",
+  ];
+
+  for (let i = 0; i < defaultEvaluationSteps.length; i++) {
+    const label = defaultEvaluationSteps[i];
+    await prisma.masterChecklistItem.upsert({
+      where: { id: `seed-eval-step-${i}` },
+      update: { label, order: i },
+      create: {
+        id: `seed-eval-step-${i}`,
+        phase: "EVALUATION",
+        label,
+        order: i,
+        isDefault: true,
+      },
+    });
+  }
+
+  for (let i = 0; i < defaultPreparationSteps.length; i++) {
+    const label = defaultPreparationSteps[i];
+    await prisma.masterChecklistItem.upsert({
+      where: { id: `seed-prep-step-${i}` },
+      update: { label, order: i },
+      create: {
+        id: `seed-prep-step-${i}`,
+        phase: "PREPARATION",
+        label,
+        order: i,
+        isDefault: true,
+      },
+    });
+  }
 
   console.log(`Seed complete. Reference tender id: ${tender.id}`);
 }

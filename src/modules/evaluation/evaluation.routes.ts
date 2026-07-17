@@ -143,14 +143,56 @@ const DEFAULT_PREPARATION_STEPS = [
 ];
 
 async function ensureDefaultChecklist(tenderId: string) {
-  const existing = await prisma.tenderUpdateChecklist.count({ where: { tenderId } });
-  if (existing > 0) return;
-
-  const rows = [
-    ...DEFAULT_EVALUATION_STEPS.map((label, i) => ({ tenderId, phase: "EVALUATION", label, order: i })),
-    ...DEFAULT_PREPARATION_STEPS.map((label, i) => ({ tenderId, phase: "PREPARATION", label, order: i })),
+  const staticItems = [
+    { phase: "EVALUATION", label: "Shortlist for preparation", order: -100 },
+    { phase: "SUBMISSION", label: "Submission", order: -100 },
+    { phase: "SUBMISSION", label: "Technical round", order: -99 },
+    { phase: "SUBMISSION", label: "Commercial round", order: -98 },
+    { phase: "OUTCOME", label: "Decision made", order: -100 },
   ];
-  await prisma.tenderUpdateChecklist.createMany({ data: rows });
+
+  for (const item of staticItems) {
+    const found = await prisma.tenderUpdateChecklist.findFirst({
+      where: { tenderId, phase: item.phase, label: item.label },
+    });
+    if (!found) {
+      await prisma.tenderUpdateChecklist.create({
+        data: {
+          tenderId,
+          phase: item.phase,
+          label: item.label,
+          order: item.order,
+        },
+      });
+    }
+  }
+
+  const existingNonStaticCount = await prisma.tenderUpdateChecklist.count({
+    where: {
+      tenderId,
+      NOT: {
+        label: { in: staticItems.map((s) => s.label) },
+      },
+    },
+  });
+
+  if (existingNonStaticCount === 0) {
+    const defaultItems = await prisma.masterChecklistItem.findMany({
+      where: { isDefault: true },
+      orderBy: [{ phase: "asc" }, { order: "asc" }],
+    });
+
+    const rows = defaultItems.map((item) => ({
+      tenderId,
+      phase: item.phase,
+      label: item.label,
+      order: item.order,
+    }));
+
+    if (rows.length > 0) {
+      await prisma.tenderUpdateChecklist.createMany({ data: rows });
+    }
+  }
 }
 
 const checklistInclude = { updatedBy: { select: { fullName: true, role: { select: { name: true } } } } };
@@ -172,10 +214,11 @@ const checklistSaveSchema = z.object({
   items: z.array(
     z.object({
       id: z.string(),
-      phase: z.enum(["EVALUATION", "PREPARATION"]),
+      phase: z.enum(["EVALUATION", "PREPARATION", "SUBMISSION", "OUTCOME"]),
       label: z.string().min(1),
       order: z.number().int(),
       checked: z.boolean(),
+      remarks: z.string().nullable().optional(),
     })
   ),
 });
@@ -191,8 +234,23 @@ router.put(
     const existing = await prisma.tenderUpdateChecklist.findMany({ where: { tenderId: req.params.tenderId } });
     const existingById = new Map(existing.map((e) => [e.id, e]));
 
-    await prisma.$transaction(
-      data.items.map((item) => {
+    const shortlistChecked = data.items.some((i) => i.label === "Shortlist for preparation" && i.checked);
+    const submissionChecked = data.items.some((i) => i.label === "Submission" && i.checked);
+    const decisionMadeChecked = data.items.some((i) => i.label === "Decision made" && i.checked);
+
+    let nextBidStage: "EVALUATION" | "PREPARATION" | "SUBMISSION" | "CLOSED";
+    if (decisionMadeChecked) {
+      nextBidStage = "CLOSED";
+    } else if (submissionChecked) {
+      nextBidStage = "SUBMISSION";
+    } else if (shortlistChecked) {
+      nextBidStage = "PREPARATION";
+    } else {
+      nextBidStage = "EVALUATION";
+    }
+
+    await prisma.$transaction([
+      ...data.items.map((item) => {
         const prior = existingById.get(item.id);
         const checkedChanged = !!prior && prior.checked !== item.checked;
         return prisma.tenderUpdateChecklist.update({
@@ -202,11 +260,16 @@ router.put(
             label: item.label,
             order: item.order,
             checked: item.checked,
+            remarks: item.remarks,
             ...(checkedChanged ? { updatedById: req.user!.userId } : {}),
           },
         });
-      })
-    );
+      }),
+      prisma.tender.update({
+        where: { id: req.params.tenderId },
+        data: { bidStage: nextBidStage },
+      }),
+    ]);
     await recordAudit(req, "UPDATE", "TenderUpdateChecklist", req.params.tenderId);
     const items = await prisma.tenderUpdateChecklist.findMany({
       where: { tenderId: req.params.tenderId },
@@ -218,22 +281,54 @@ router.put(
 );
 
 const addChecklistItemSchema = z.object({
-  phase: z.enum(["EVALUATION", "PREPARATION"]),
+  phase: z.enum(["EVALUATION", "PREPARATION", "SUBMISSION", "OUTCOME"]),
   label: z.string().min(1),
+  addToDefault: z.boolean().optional(),
 });
 
 router.post(
   "/:tenderId/checklist",
   asyncHandler(async (req: AuthedRequest, res) => {
     const data = addChecklistItemSchema.parse(req.body);
-    const maxOrder = await prisma.tenderUpdateChecklist.aggregate({
-      where: { tenderId: req.params.tenderId, phase: data.phase },
-      _max: { order: true },
+    
+    const item = await prisma.$transaction(async (tx) => {
+      const maxOrder = await tx.tenderUpdateChecklist.aggregate({
+        where: { tenderId: req.params.tenderId, phase: data.phase },
+        _max: { order: true },
+      });
+      const order = (maxOrder._max.order ?? -1) + 1;
+
+      const created = await tx.tenderUpdateChecklist.create({
+        data: {
+          tenderId: req.params.tenderId,
+          phase: data.phase,
+          label: data.label,
+          order,
+          checked: false,
+        },
+        include: checklistInclude,
+      });
+
+      if (data.addToDefault && req.user!.role === "ADMIN") {
+        const masterMax = await tx.masterChecklistItem.aggregate({
+          where: { phase: data.phase },
+          _max: { order: true },
+        });
+        const masterOrder = (masterMax._max.order ?? -1) + 1;
+
+        await tx.masterChecklistItem.create({
+          data: {
+            phase: data.phase,
+            label: data.label,
+            order: masterOrder,
+            isDefault: true,
+          },
+        });
+      }
+
+      return created;
     });
-    const item = await prisma.tenderUpdateChecklist.create({
-      data: { tenderId: req.params.tenderId, phase: data.phase, label: data.label, order: (maxOrder._max.order ?? -1) + 1 },
-      include: checklistInclude,
-    });
+
     await recordAudit(req, "CREATE", "TenderUpdateChecklist", item.id, data);
     res.status(201).json(item);
   })
