@@ -54,3 +54,5 @@ uploads/
 prisma/*.db
 prisma/*.db-journal
 .claude/
+.vercel
+.env*
