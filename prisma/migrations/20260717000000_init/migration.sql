@@ -1,4 +1,4 @@
-﻿-- CreateEnum
+-- CreateEnum
 CREATE TYPE "TenderType" AS ENUM ('HARDWARE', 'SOFTWARE', 'SERVICES');
 
 -- CreateEnum

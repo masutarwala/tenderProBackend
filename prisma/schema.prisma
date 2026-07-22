@@ -53,6 +53,7 @@ enum ApprovalOverallStatus {
 enum Outcome {
   WON
   LOST
+  NO_GO // Evaluation-stage decision — closed before ever reaching Submission
 }
 
 enum LostReason {
@@ -107,6 +108,10 @@ model Role {
   updatedAt   DateTime @updatedAt
 
   users User[]
+  checklistAssignments TenderUpdateChecklist[]
+  stageApprovals StageApproval[]
+  targetedQueries TenderQuery[]
+  masterApprovalItems MasterApprovalItem[]
 }
 
 model User {
@@ -133,6 +138,10 @@ model User {
   auditLogs          AuditLog[]
   documentsUploaded  Document[]
   checklistUpdates   TenderUpdateChecklist[]
+  awardFormalityUpdates AwardFormalities[]
+  stageApprovalsGiven StageApproval[]
+  tenderQueriesCreated TenderQuery[] @relation("TenderQueryCreatedBy")
+  tenderQueryRepliesCreated TenderQueryReply[] @relation("TenderQueryReplyCreatedBy")
 }
 
 model Customer {
@@ -240,6 +249,7 @@ model Document {
   entityType   String   // "Tender" | "Opportunity" | "EmdPayment" | "EmdRefund" | "Pqi"
   entityId     String
   category     String?  // e.g. "NIT", "OTHER", "CORRIGENDUM" — free-form grouping label for the UI
+  title        String?  // user-supplied display title (required by the Tender Update-page uploader, optional elsewhere)
   fileName     String
   storageKey   String
   mimeType     String?
@@ -314,6 +324,9 @@ model Tender {
   outcomeRecord     OutcomeRecord?
   checklistItems    TenderUpdateChecklist[]
   outputRecord      TenderOutput?
+  awardFormalities  AwardFormalities?
+  stageApprovals    StageApproval[]
+  queries           TenderQuery[]
 }
 
 model PreliminaryTenderInfo {
@@ -415,6 +428,7 @@ model OutcomeRecord {
   tenderId        String   @unique
   tender          Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
   outcome         Outcome
+  submittedAt     DateTime? // bid submission date — captured on the Update Tender page's Submission tab
   orderId         String?
   contractValue   Float?
   contractSignedDate DateTime?
@@ -425,6 +439,42 @@ model OutcomeRecord {
   remarks         String?
   recordedById    String?
   recordedAt      DateTime @default(now())
+
+  // New fields added
+  emdAmount       Float?
+  emdDetails      String?
+  outcomeDate     DateTime?
+  decisionDate    DateTime?
+}
+
+// Post-WON formalities tracker (contract/PO/BG) — spec §Award & Contracting.
+// Files (contract/PO/BG) are stored via the generic Document model
+// (entityType="Tender", category="CONTRACT"|"PO"|"BG"), not here.
+model AwardFormalities {
+  id                  String    @id @default(cuid())
+  tenderId            String    @unique
+  tender              Tender    @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  contractSigned      Boolean   @default(false)
+  contractSignedDate  DateTime?
+
+  poReceived          Boolean   @default(false)
+  poNumber            String?
+  poDate              DateTime?
+  poValue             Float?
+
+  bgRequired          Boolean   @default(false)
+  bgIssued            Boolean   @default(false)
+  bgAmount            Float?
+  bgBankName          String?
+  bgValidityDate      DateTime?
+
+  formalitiesComplete Boolean   @default(false)
+
+  updatedById         String?
+  updatedBy           User?     @relation(fields: [updatedById], references: [id])
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 }
 
 model TenderFeeEmdRequirement {
@@ -497,22 +547,92 @@ model AuditLog {
   createdAt    DateTime @default(now())
 }
 
-// Per-tender checklist for the Update page's Evaluation/Preparation tabs. Default
-// items are seeded on first GET for a tender (see evaluation.routes.ts) rather than
-// at tender-creation time, so the step lists can evolve without a migration.
+// Per-tender checklist for the Update page's Evaluation/Preparation/Submission
+// tabs. Static task list defined in CHECKLIST_DEFINITION (evaluation.routes.ts);
+// rows are seeded/garbage-collected on GET, never user-created.
 model TenderUpdateChecklist {
-  id          String   @id @default(cuid())
-  tenderId    String
-  tender      Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  phase       String   // "EVALUATION" | "PREPARATION" | "OUTCOME"
-  label       String
-  order       Int
-  checked     Boolean  @default(false)
-  remarks     String?
-  updatedById String?  // who last flipped `checked` — see evaluation.routes.ts PUT handler
-  updatedBy   User?    @relation(fields: [updatedById], references: [id])
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(cuid())
+  tenderId       String
+  tender         Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  phase          String   // "EVALUATION" | "PREPARATION" | "SUBMISSION"
+  label          String
+  order          Int
+  checked        Boolean  @default(false)
+  remarks        String?  // reused as free-text remarks for the Go/No-Go decision row
+  decision       String?  // "GO" | "NO_GO" — only set on the static Go/No-Go Decision row
+  updatedById    String?  // who last flipped `checked` — see evaluation.routes.ts PUT handler
+  updatedBy      User?    @relation(fields: [updatedById], references: [id])
+  assignedRoleId String?  // per-tender responsible team/role for this task (spec: "assign role for each checklist")
+  assignedRole   Role?    @relation(fields: [assignedRoleId], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+// Per-tender, per-checklist-phase approval sign-off list (shown as the
+// "Approvals" card on the Update Tender page, below the checklist). Which
+// roles appear is admin-configurable per tender; only a user holding that
+// role (or ADMIN) can approve their own row — see stageApprovals.routes.ts.
+model StageApproval {
+  id           String    @id @default(cuid())
+  tenderId     String
+  tender       Tender    @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  phase        String    // "EVALUATION" | "PREPARATION"
+  title        String    @default("") // what's being approved, e.g. "Technical Clearance"
+  roleId       String
+  role         Role      @relation(fields: [roleId], references: [id])
+  required     Boolean   @default(true)
+  approved     Boolean   @default(false)
+  approvedAt   DateTime?
+  approvedById String?
+  approvedBy   User?     @relation(fields: [approvedById], references: [id])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // A role can hold multiple distinct approvals per phase (e.g. Sales Manager
+  // may be asked for both "Technical Clearance" and "Budget Sign-off").
+  @@index([tenderId, phase, roleId])
+}
+
+enum QueryVisibility {
+  PUBLIC  // anyone who can open this tender's Update page can see & reply
+  PRIVATE // only the creator + the targeted role (+ BIDDER) can see & reply
+}
+
+enum QueryStatus {
+  OPEN
+  RESOLVED // flips automatically the moment the first reply is posted
+}
+
+// The "ask a query" thread shown alongside the Update Tender page's per-phase
+// activity feed — separate from StageApproval (a formal sign-off) and from
+// TenderUpdateChecklist (a checklist row's own remarks).
+model TenderQuery {
+  id           String          @id @default(cuid())
+  tenderId     String
+  tender       Tender          @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  phase        String          // "EVALUATION" | "PREPARATION" — which tab this belongs to
+  message      String
+  visibility   QueryVisibility @default(PUBLIC)
+  targetRoleId String?
+  targetRole   Role?           @relation(fields: [targetRoleId], references: [id])
+  status       QueryStatus     @default(OPEN)
+  createdById  String?
+  createdBy    User?           @relation("TenderQueryCreatedBy", fields: [createdById], references: [id])
+  createdAt    DateTime        @default(now())
+
+  replies TenderQueryReply[]
+
+  @@index([tenderId, phase])
+}
+
+model TenderQueryReply {
+  id          String      @id @default(cuid())
+  queryId     String
+  query       TenderQuery @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  message     String
+  createdById String?
+  createdBy   User?       @relation("TenderQueryReplyCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime    @default(now())
 }
 
 model TenderOutput {
@@ -534,6 +654,18 @@ model MasterChecklistItem {
   phase     String   // "EVALUATION" | "PREPARATION"
   label     String
   order     Int
+  isDefault Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model MasterApprovalItem {
+  id        String   @id @default(cuid())
+  phase     String   // "EVALUATION" | "PREPARATION"
+  title     String
+  roleId    String
+  role      Role     @relation(fields: [roleId], references: [id])
+  required  Boolean  @default(true)
   isDefault Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

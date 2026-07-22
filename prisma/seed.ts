@@ -6,7 +6,7 @@ const prisma = new PrismaClient();
 const DEFAULT_PASSWORD = "Passw0rd!";
 
 // Menu keys must stay in sync with backend/src/modules/roles/roles.routes.ts (MENU_KEYS)
-// and frontend/src/layouts/menuRegistry.ts. These are the 8 system roles — isSystem: true
+// and frontend/src/layouts/menuRegistry.ts. These are the 9 system roles — isSystem: true
 // locks their name (route guards like requireRole("FINANCE") key off it) but leaves
 // description/menuKeys editable from the admin Roles screen.
 const SYSTEM_ROLES: Record<string, { description: string; menuKeys: string[] }> = {
@@ -14,13 +14,14 @@ const SYSTEM_ROLES: Record<string, { description: string; menuKeys: string[] }> 
     description: "Full administrative access, including user, role, and master-data management.",
     menuKeys: ["tenders", "evaluation", "approvals", "emd-payments", "emd-refunds", "emd-summary", "ceo-dashboard", "customers", "users", "roles", "pqi", "interest-criteria", "decision-matrices", "checklist"],
   },
-  EXTRACTOR: { description: "Extracts and uploads new tenders for evaluation.", menuKeys: ["tenders"] },
-  EVALUATOR: { description: "Evaluates and shortlists tenders in the Prospect stage.", menuKeys: ["tenders", "evaluation", "interest-criteria"] },
-  BIDDER: { description: "Prepares and submits assigned bids.", menuKeys: ["tenders", "my-bids"] },
-  SALES_EXEC: { description: "Owns customer relationships for assigned bids.", menuKeys: ["tenders", "customers"] },
-  SALES_MANAGER: { description: "Manages the sales team's bid pipeline and approvals.", menuKeys: ["tenders", "team-bids", "approvals", "customers"] },
-  FINANCE: { description: "Manages EMD payment/refund verification and bid approvals.", menuKeys: ["tenders", "approvals", "emd-payments", "emd-refunds", "emd-summary"] },
+  EXTRACTOR: { description: "Extracts and uploads new tenders for evaluation.", menuKeys: ["tenders", "ceo-dashboard"] },
+  EVALUATOR: { description: "Evaluates and shortlists tenders in the Prospect stage.", menuKeys: ["tenders", "evaluation", "interest-criteria", "ceo-dashboard"] },
+  BIDDER: { description: "Prepares and submits assigned bids.", menuKeys: ["tenders", "my-bids", "ceo-dashboard"] },
+  SALES_EXEC: { description: "Owns customer relationships for assigned bids.", menuKeys: ["tenders", "customers", "ceo-dashboard"] },
+  SALES_MANAGER: { description: "Manages the sales team's bid pipeline and approvals.", menuKeys: ["tenders", "team-bids", "approvals", "customers", "ceo-dashboard"] },
+  FINANCE: { description: "Manages EMD payment/refund verification and bid approvals.", menuKeys: ["tenders", "approvals", "emd-payments", "emd-refunds", "emd-summary", "ceo-dashboard"] },
   CEO: { description: "Final approver with full pipeline and EMD financial visibility.", menuKeys: ["tenders", "approvals", "emd-summary", "ceo-dashboard"] },
+  TECH: { description: "Gives technical sign-off during evaluation and preparation.", menuKeys: ["tenders", "approvals", "ceo-dashboard"] },
 };
 
 async function upsertRole(name: string) {
@@ -57,6 +58,7 @@ async function main() {
   const bidder = await upsertUser("bidder@tenderpro.local", "Bella Bidder", "BIDDER");
   await upsertUser("finance@tenderpro.local", "Fin Finance", "FINANCE");
   await upsertUser("ceo@tenderpro.local", "Cara CEO", "CEO");
+  await upsertUser("tech@tenderpro.local", "Theo Tech", "TECH");
   void salesManager;
 
   console.log("Seeding interest criteria...");

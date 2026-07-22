@@ -5,6 +5,7 @@ import { asyncHandler, HttpError } from "../../middleware/errorHandler";
 import { authenticate, AuthedRequest } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { recordAudit } from "../../middleware/audit";
+import { isEvaluationGatePassed, tryAdvanceFromEvaluation, isPreparationGatePassed, tryAdvanceFromPreparation } from "../../utils/evaluationGate";
 
 const router = Router();
 router.use(authenticate);
@@ -123,83 +124,94 @@ router.post(
 // TENDER UPDATE PAGE: CHECKLIST + OUTPUT
 // ============================================
 
-const DEFAULT_EVALUATION_STEPS = [
-  "Tender document review",
-  "Technical feasibility assessment",
-  "Compliance check (eligibility & EMD)",
-  "Financial analysis",
-  "Risk assessment",
-  "Go/No-Go decision",
+// Static bid lifecycle checklist — 3 phase groups matching bidStage 1:1
+// (EVALUATION/PREPARATION/SUBMISSION; completing the last SUBMISSION task closes
+// the tender). Not user-editable — no add/remove/reorder. Each row can carry a
+// per-tender `assignedRoleId` (see PUT handler) for "who owns this task".
+export const CHECKLIST_DEFINITION: { phase: string; order: number; label: string }[] = [
+  // Static, always-first: the Go/No-Go call for this tender. Rendered specially
+  // (dropdown + remarks + submit, not a checkbox) — see the /decision endpoint
+  // below. The other 7 EVALUATION items are informational and don't gate the
+  // stage transition; only this row (+ required approvals) does.
+  { phase: "EVALUATION", order: 0, label: "Go/No-Go Decision" },
+  { phase: "EVALUATION", order: 1, label: "Review Tender Document" },
+  { phase: "EVALUATION", order: 2, label: "Evaluate Eligibility" },
+  { phase: "EVALUATION", order: 3, label: "Risk Analysis" },
+  { phase: "EVALUATION", order: 4, label: "Prepare Technical Queries" },
+  { phase: "EVALUATION", order: 5, label: "Prepare Commercial Queries" },
+  { phase: "EVALUATION", order: 6, label: "Attend Pre-Bid Meeting" },
+  { phase: "EVALUATION", order: 7, label: "Seek Deviations" },
+
+  // Static, always-first: the submit call for Preparation. Rendered specially
+  // (submit + remarks, not a checkbox) — see the /submit endpoint below. Once
+  // checked + all required PREPARATION approvals are in, advances to Submission.
+  { phase: "PREPARATION", order: 0, label: "Preparation Done" },
+  { phase: "PREPARATION", order: 1, label: "Checklist Preparation" },
+  { phase: "PREPARATION", order: 2, label: "OEM/Partner Coordination" },
+  { phase: "PREPARATION", order: 3, label: "Quote" },
+  { phase: "PREPARATION", order: 4, label: "Document Collation" },
+  { phase: "PREPARATION", order: 5, label: "Technicals" },
+  { phase: "PREPARATION", order: 6, label: "Drafting" },
+  { phase: "PREPARATION", order: 7, label: "Financial Risk Assessment" },
+  { phase: "PREPARATION", order: 8, label: "Management Buy in" },
+
+  { phase: "SUBMISSION", order: 0, label: "EMD Prepared" },
+  { phase: "SUBMISSION", order: 1, label: "Final Prepared" },
+  { phase: "SUBMISSION", order: 2, label: "Quality Review Completed" },
+  { phase: "SUBMISSION", order: 3, label: "Submitted" },
 ];
 
-const DEFAULT_PREPARATION_STEPS = [
-  "NIT / RFP download",
-  "Pre-bid queries submission",
-  "Technical document preparation",
-  "Financial bid preparation",
-  "EMD arrangement",
-  "Document compilation & review",
-  "Submission",
-];
+const CHECKLIST_PHASES = ["EVALUATION", "PREPARATION", "SUBMISSION"] as const;
 
-async function ensureDefaultChecklist(tenderId: string) {
-  const staticItems = [
-    { phase: "EVALUATION", label: "Shortlist for preparation", order: -100 },
-    { phase: "SUBMISSION", label: "Submission", order: -100 },
-    { phase: "SUBMISSION", label: "Technical round", order: -99 },
-    { phase: "SUBMISSION", label: "Commercial round", order: -98 },
-    { phase: "OUTCOME", label: "Decision made", order: -100 },
+// A stage's status is COMPLETED once every task in that phase is checked, else
+// IN_PROGRESS. Exported for reuse by tenders.routes.ts (list/detail stageProgress).
+export function computeStageProgress(bidStage: string, checklistItems: { phase: string; checked: boolean }[]) {
+  if (bidStage === "CLOSED") return { completed: 0, total: 0, status: "COMPLETED" as const };
+  const rows = checklistItems.filter((i) => i.phase === bidStage);
+  const completed = rows.filter((i) => i.checked).length;
+  const total = rows.length;
+  const status = total > 0 && completed === total ? ("COMPLETED" as const) : ("IN_PROGRESS" as const);
+  return { completed, total, status };
+}
+
+// Seeds a tender's checklist from two sources: the fixed CHECKLIST_DEFINITION
+// (always present, every tender) and any admin/bidder-authored template items
+// (MasterChecklistItem, EVALUATION/PREPARATION only — see the /items endpoints
+// below). Purely additive: never deletes a row, so ad-hoc items added to just
+// one tender (not saved to the template) persist safely too.
+export async function ensureDefaultChecklist(tenderId: string) {
+  const templateItems = await prisma.masterChecklistItem.findMany({
+    where: { phase: { in: ["EVALUATION", "PREPARATION"] }, isDefault: true },
+  });
+  const toSeed = [
+    ...CHECKLIST_DEFINITION,
+    ...templateItems.map((t) => ({ phase: t.phase, label: t.label, order: t.order + 100 })),
   ];
 
-  for (const item of staticItems) {
-    const found = await prisma.tenderUpdateChecklist.findFirst({
-      where: { tenderId, phase: item.phase, label: item.label },
+  const existing = await prisma.tenderUpdateChecklist.findMany({ where: { tenderId } });
+  const existingKey = new Set(existing.map((e) => `${e.phase}:${e.label}`));
+  const missing = toSeed.filter((item) => !existingKey.has(`${item.phase}:${item.label}`));
+  if (missing.length > 0) {
+    await prisma.tenderUpdateChecklist.createMany({
+      data: missing.map((item) => ({ tenderId, phase: item.phase, label: item.label, order: item.order })),
     });
-    if (!found) {
-      await prisma.tenderUpdateChecklist.create({
-        data: {
-          tenderId,
-          phase: item.phase,
-          label: item.label,
-          order: item.order,
-        },
-      });
-    }
-  }
-
-  const existingNonStaticCount = await prisma.tenderUpdateChecklist.count({
-    where: {
-      tenderId,
-      NOT: {
-        label: { in: staticItems.map((s) => s.label) },
-      },
-    },
-  });
-
-  if (existingNonStaticCount === 0) {
-    const defaultItems = await prisma.masterChecklistItem.findMany({
-      where: { isDefault: true },
-      orderBy: [{ phase: "asc" }, { order: "asc" }],
-    });
-
-    const rows = defaultItems.map((item) => ({
-      tenderId,
-      phase: item.phase,
-      label: item.label,
-      order: item.order,
-    }));
-
-    if (rows.length > 0) {
-      await prisma.tenderUpdateChecklist.createMany({ data: rows });
-    }
   }
 }
 
-const checklistInclude = { updatedBy: { select: { fullName: true, role: { select: { name: true } } } } };
+const checklistInclude = {
+  updatedBy: { select: { fullName: true, role: { select: { name: true } } } },
+  assignedRole: { select: { id: true, name: true } },
+};
+
+async function assertTenderAccess(req: AuthedRequest, tenderId: string) {
+  const tender = await prisma.tender.findUnique({ where: { id: tenderId }, select: { id: true } });
+  if (!tender) throw new HttpError(404, "Tender not found");
+}
 
 router.get(
   "/:tenderId/checklist",
-  asyncHandler(async (req, res) => {
+  asyncHandler(async (req: AuthedRequest, res) => {
+    await assertTenderAccess(req, req.params.tenderId);
     await ensureDefaultChecklist(req.params.tenderId);
     const items = await prisma.tenderUpdateChecklist.findMany({
       where: { tenderId: req.params.tenderId },
@@ -214,36 +226,42 @@ const checklistSaveSchema = z.object({
   items: z.array(
     z.object({
       id: z.string(),
-      phase: z.enum(["EVALUATION", "PREPARATION", "SUBMISSION", "OUTCOME"]),
-      label: z.string().min(1),
-      order: z.number().int(),
+      phase: z.enum(CHECKLIST_PHASES),
       checked: z.boolean(),
-      remarks: z.string().nullable().optional(),
+      assignedRoleId: z.string().nullable().optional(),
     })
   ),
 });
 
-// Full replace: the Update page sends its whole in-memory checklist (both phases)
-// on every check/uncheck and every reorder, so this just upserts each row by id.
-// `updatedById` is only stamped on rows whose `checked` value actually changed —
-// reordering or relabeling doesn't touch who last checked/unchecked an item.
+// The checklist structure (labels/phases/order) is fixed by CHECKLIST_DEFINITION —
+// this only ever toggles `checked`/`assignedRoleId` on existing rows, never
+// creates/reorders/relabels. `updatedById` is only stamped on rows whose
+// `checked` value actually changed. Each phase maps 1:1 to a bidStage value —
+// completing the last SUBMISSION task closes the tender.
 router.put(
   "/:tenderId/checklist",
   asyncHandler(async (req: AuthedRequest, res) => {
+    await assertTenderAccess(req, req.params.tenderId);
     const data = checklistSaveSchema.parse(req.body);
     const existing = await prisma.tenderUpdateChecklist.findMany({ where: { tenderId: req.params.tenderId } });
     const existingById = new Map(existing.map((e) => [e.id, e]));
 
-    const shortlistChecked = data.items.some((i) => i.label === "Shortlist for preparation" && i.checked);
-    const submissionChecked = data.items.some((i) => i.label === "Submission" && i.checked);
-    const decisionMadeChecked = data.items.some((i) => i.label === "Decision made" && i.checked);
+    // Merge incoming toggles onto the known checklist rows to evaluate group completion.
+    const checkedByItemId = new Map(data.items.map((i) => [i.id, i.checked]));
+    const merged = existing.map((e) => ({ ...e, checked: checkedByItemId.get(e.id) ?? e.checked }));
+    const phaseComplete = (phase: string) => {
+      const rows = merged.filter((r) => r.phase === phase);
+      return rows.length > 0 && rows.every((r) => r.checked);
+    };
 
+    // EVALUATION's and PREPARATION's own gates are their static submit item +
+    // required approvals (see evaluationGate.ts), not "every item checked".
     let nextBidStage: "EVALUATION" | "PREPARATION" | "SUBMISSION" | "CLOSED";
-    if (decisionMadeChecked) {
+    if (phaseComplete("SUBMISSION")) {
       nextBidStage = "CLOSED";
-    } else if (submissionChecked) {
+    } else if (await isPreparationGatePassed(req.params.tenderId)) {
       nextBidStage = "SUBMISSION";
-    } else if (shortlistChecked) {
+    } else if (await isEvaluationGatePassed(req.params.tenderId)) {
       nextBidStage = "PREPARATION";
     } else {
       nextBidStage = "EVALUATION";
@@ -256,11 +274,8 @@ router.put(
         return prisma.tenderUpdateChecklist.update({
           where: { id: item.id },
           data: {
-            phase: item.phase,
-            label: item.label,
-            order: item.order,
             checked: item.checked,
-            remarks: item.remarks,
+            ...(item.assignedRoleId !== undefined ? { assignedRoleId: item.assignedRoleId } : {}),
             ...(checkedChanged ? { updatedById: req.user!.userId } : {}),
           },
         });
@@ -280,50 +295,126 @@ router.put(
   })
 );
 
-const addChecklistItemSchema = z.object({
-  phase: z.enum(["EVALUATION", "PREPARATION", "SUBMISSION", "OUTCOME"]),
+const decisionSchema = z.object({
+  decision: z.enum(["GO", "NO_GO"]),
+  remarks: z.string().trim().min(1, "Remarks are required"),
+});
+
+// Submits the static "Go/No-Go Decision" row — separate from the bulk checklist
+// save since it carries extra fields (decision/remarks) and can, on its own,
+// advance the tender past EVALUATION once required approvals are also in.
+router.put(
+  "/:tenderId/checklist/:itemId/decision",
+  asyncHandler(async (req: AuthedRequest, res) => {
+    await assertTenderAccess(req, req.params.tenderId);
+    const data = decisionSchema.parse(req.body);
+    const item = await prisma.tenderUpdateChecklist.findUnique({ where: { id: req.params.itemId } });
+    if (!item || item.tenderId !== req.params.tenderId || item.label !== "Go/No-Go Decision") {
+      throw new HttpError(404, "Go/No-Go decision item not found");
+    }
+
+    const updated = await prisma.tenderUpdateChecklist.update({
+      where: { id: item.id },
+      data: { checked: true, decision: data.decision, remarks: data.remarks ?? null, updatedById: req.user!.userId },
+      include: checklistInclude,
+    });
+
+    if (data.decision === "GO") {
+      await tryAdvanceFromEvaluation(req.params.tenderId);
+    } else {
+      // No-Go closes the tender right here — it never reaches Submission, so it
+      // needs its own outcome record for the Award page (filterable as "No-Go",
+      // distinct from a Submission-stage Win/Lost).
+      await prisma.tender.update({ where: { id: req.params.tenderId }, data: { bidStage: "CLOSED" } });
+      await prisma.outcomeRecord.upsert({
+        where: { tenderId: req.params.tenderId },
+        update: { outcome: "NO_GO", remarks: data.remarks, recordedById: req.user!.userId },
+        create: { tenderId: req.params.tenderId, outcome: "NO_GO", remarks: data.remarks, recordedById: req.user!.userId },
+      });
+    }
+
+    await recordAudit(req, "UPDATE", "TenderUpdateChecklist", updated.id, data);
+    // Return the resulting bidStage alongside the item so the frontend doesn't
+    // need a second round-trip (a plain GET /tenders/:id) just to learn whether
+    // this submission advanced the tender's stage.
+    const tender = await prisma.tender.findUnique({ where: { id: req.params.tenderId }, select: { bidStage: true } });
+    res.json({ item: updated, bidStage: tender!.bidStage });
+  })
+);
+
+const submitSchema = z.object({
+  remarks: z.string().trim().min(1, "Remarks are required"),
+});
+
+// Submits the static "Preparation Done" row — mirrors /decision above but
+// for PREPARATION (no Go/No-Go choice, just a single confirm action).
+router.put(
+  "/:tenderId/checklist/:itemId/submit",
+  asyncHandler(async (req: AuthedRequest, res) => {
+    await assertTenderAccess(req, req.params.tenderId);
+    const data = submitSchema.parse(req.body);
+    const item = await prisma.tenderUpdateChecklist.findUnique({ where: { id: req.params.itemId } });
+    if (!item || item.tenderId !== req.params.tenderId || item.label !== "Preparation Done") {
+      throw new HttpError(404, "Preparation Done item not found");
+    }
+
+    const updated = await prisma.tenderUpdateChecklist.update({
+      where: { id: item.id },
+      data: { checked: true, remarks: data.remarks ?? null, updatedById: req.user!.userId },
+      include: checklistInclude,
+    });
+
+    await tryAdvanceFromPreparation(req.params.tenderId);
+
+    await recordAudit(req, "UPDATE", "TenderUpdateChecklist", updated.id, data);
+    // See the /decision endpoint above for why bidStage is returned here too.
+    const tender = await prisma.tender.findUnique({ where: { id: req.params.tenderId }, select: { bidStage: true } });
+    res.json({ item: updated, bidStage: tender!.bidStage });
+  })
+);
+
+// ============================================
+// CHECKLIST ITEM MANAGEMENT (BIDDER only, EVALUATION & PREPARATION only) —
+// the two static gate rows (Go/No-Go Decision, Preparation Done) can't be
+// added/removed/renamed since the stage-transition logic keys off their exact
+// label.
+// ============================================
+
+const MANAGE_ROLES = ["BIDDER"];
+const PROTECTED_LABELS = ["Go/No-Go Decision", "Preparation Done"];
+const ITEM_MANAGE_PHASES = ["EVALUATION", "PREPARATION"] as const;
+
+const addItemSchema = z.object({
+  phase: z.enum(ITEM_MANAGE_PHASES),
   label: z.string().min(1),
-  addToDefault: z.boolean().optional(),
+  addToTemplate: z.boolean().optional(),
 });
 
 router.post(
-  "/:tenderId/checklist",
+  "/:tenderId/checklist/items",
+  requireRole(...MANAGE_ROLES),
   asyncHandler(async (req: AuthedRequest, res) => {
-    const data = addChecklistItemSchema.parse(req.body);
-    
+    await assertTenderAccess(req, req.params.tenderId);
+    const data = addItemSchema.parse(req.body);
+
     const item = await prisma.$transaction(async (tx) => {
       const maxOrder = await tx.tenderUpdateChecklist.aggregate({
         where: { tenderId: req.params.tenderId, phase: data.phase },
         _max: { order: true },
       });
-      const order = (maxOrder._max.order ?? -1) + 1;
-
       const created = await tx.tenderUpdateChecklist.create({
-        data: {
-          tenderId: req.params.tenderId,
-          phase: data.phase,
-          label: data.label,
-          order,
-          checked: false,
-        },
+        data: { tenderId: req.params.tenderId, phase: data.phase, label: data.label, order: (maxOrder._max.order ?? -1) + 1 },
         include: checklistInclude,
       });
 
-      if (data.addToDefault && req.user!.role === "ADMIN") {
-        const masterMax = await tx.masterChecklistItem.aggregate({
-          where: { phase: data.phase },
-          _max: { order: true },
-        });
-        const masterOrder = (masterMax._max.order ?? -1) + 1;
-
-        await tx.masterChecklistItem.create({
-          data: {
-            phase: data.phase,
-            label: data.label,
-            order: masterOrder,
-            isDefault: true,
-          },
-        });
+      if (data.addToTemplate) {
+        const existingTemplate = await tx.masterChecklistItem.findFirst({ where: { phase: data.phase, label: data.label } });
+        if (!existingTemplate) {
+          const maxTemplateOrder = await tx.masterChecklistItem.aggregate({ where: { phase: data.phase }, _max: { order: true } });
+          await tx.masterChecklistItem.create({
+            data: { phase: data.phase, label: data.label, order: (maxTemplateOrder._max.order ?? -1) + 1, isDefault: true },
+          });
+        }
       }
 
       return created;
@@ -335,10 +426,15 @@ router.post(
 );
 
 router.delete(
-  "/:tenderId/checklist/:itemId",
+  "/:tenderId/checklist/items/:itemId",
+  requireRole(...MANAGE_ROLES),
   asyncHandler(async (req: AuthedRequest, res) => {
+    await assertTenderAccess(req, req.params.tenderId);
     const item = await prisma.tenderUpdateChecklist.findUnique({ where: { id: req.params.itemId } });
     if (!item || item.tenderId !== req.params.tenderId) throw new HttpError(404, "Checklist item not found");
+    if (!ITEM_MANAGE_PHASES.includes(item.phase as any)) throw new HttpError(400, "Only Evaluation/Preparation items can be removed");
+    if (PROTECTED_LABELS.includes(item.label)) throw new HttpError(400, "This item can't be removed");
+
     await prisma.tenderUpdateChecklist.delete({ where: { id: item.id } });
     await recordAudit(req, "DELETE", "TenderUpdateChecklist", item.id);
     res.status(204).send();

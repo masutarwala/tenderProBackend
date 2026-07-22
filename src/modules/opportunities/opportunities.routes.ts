@@ -32,7 +32,7 @@ router.get(
 
 router.patch(
   "/:tenderId",
-  requireRole("BIDDER", "ADMIN"),
+  requireRole("BIDDER"),
   asyncHandler(async (req: AuthedRequest, res) => {
     const data = updateSchema.parse(req.body);
     
@@ -66,7 +66,7 @@ router.patch(
 // Finance/Sales Manager/CEO for concurrent approval.
 router.post(
   "/:tenderId/submit-for-approval",
-  requireRole("BIDDER", "ADMIN"),
+  requireRole("BIDDER"),
   asyncHandler(async (req: AuthedRequest, res) => {
     const tender = await prisma.tender.findUnique({
       where: { id: req.params.tenderId },

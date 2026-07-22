@@ -7,12 +7,17 @@ import { requireRole } from "../../middleware/rbac";
 import { recordAudit } from "../../middleware/audit";
 
 const router = Router();
-router.use(authenticate, requireRole("ADMIN"));
+// Listing roles is read-only reference data (e.g. the Update Tender page's query
+// panel needs it to let any role pick who a private query goes to) — open to any
+// authenticated user. Creating/editing/deleting roles stays restricted below.
+router.use(authenticate);
+const MANAGE_ROLES = ["ADMIN", "BIDDER"];
 
 // Canonical menu key registry — must stay in sync with frontend/src/layouts/menuRegistry.ts.
 // Kept as a validated enum so a typo in the admin UI can't silently create a dead permission.
 export const MENU_KEYS = [
   "tenders",
+  "awards",
   "my-bids",
   "team-bids",
   "approvals",
@@ -27,6 +32,7 @@ export const MENU_KEYS = [
   "interest-criteria",
   "decision-matrices",
   "checklist",
+  "approval-master",
 ] as const;
 
 const roleSchema = z.object({
@@ -64,6 +70,7 @@ router.get(
 
 router.post(
   "/",
+  requireRole(...MANAGE_ROLES),
   asyncHandler(async (req: any, res) => {
     const data = roleSchema.parse(req.body);
     const role = await prisma.role.create({ data });
@@ -74,6 +81,7 @@ router.post(
 
 router.patch(
   "/:id",
+  requireRole(...MANAGE_ROLES),
   asyncHandler(async (req: any, res) => {
     const data = roleSchema.partial().parse(req.body);
     const existing = await prisma.role.findUnique({ where: { id: req.params.id } });
@@ -92,6 +100,7 @@ router.patch(
 
 router.delete(
   "/:id",
+  requireRole(...MANAGE_ROLES),
   asyncHandler(async (req: any, res) => {
     const role = await prisma.role.findUnique({ where: { id: req.params.id }, include: { _count: { select: { users: true } } } });
     if (!role) throw new HttpError(404, "Role not found");

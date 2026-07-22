@@ -9,6 +9,7 @@ import { canTransitionProspect } from "../../utils/tenderStateMachine";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { validateContacts, validateContactsDb } from "../../utils/validation";
+import { computeStageProgress, ensureDefaultChecklist } from "../evaluation/evaluation.routes";
 
 const router = Router();
 router.use(authenticate);
@@ -21,6 +22,13 @@ function formatTenderId(seq: number): string {
 
 function withTenderId<T extends { tenderSeq: number }>(tender: T) {
   return { ...tender, tenderId: formatTenderId(tender.tenderSeq) };
+}
+
+// Attaches { completed, total, status } for the tender's *current* bidStage,
+// derived from its checklist (see evaluation.routes.ts CHECKLIST_DEFINITION).
+function withStageProgress<T extends { bidStage: string; checklistItems: { phase: string; checked: boolean }[] }>(tender: T) {
+  const { checklistItems, ...rest } = tender;
+  return { ...rest, stageProgress: computeStageProgress(tender.bidStage, checklistItems) };
 }
 
 router.post(
@@ -200,7 +208,7 @@ router.get(
     const where: any = {};
     if (bidStage) where.bidStage = bidStage;
     // Bidders/sales execs only see their assigned tenders (spec §6 role matrix)
-    if (req.user!.role === "BIDDER") where.bidderId = req.user!.userId;
+    // if (req.user!.role === "BIDDER") where.bidderId = req.user!.userId;
     if (req.user!.role === "SALES_EXEC") where.salesExecId = req.user!.userId;
     const tenders = await prisma.tender.findMany({
       where,
@@ -209,16 +217,18 @@ router.get(
         emdRequirement: { include: { emdPayment: true } },
         bidder: { select: { id: true, fullName: true } },
         salesExec: { select: { id: true, fullName: true } },
+        checklistItems: { select: { phase: true, checked: true } },
+        outcomeRecord: true,
       },
       orderBy: { createdAt: "desc" },
     });
-    res.json(tenders.map(withTenderId));
+    res.json(tenders.map((t) => withTenderId(withStageProgress(t))));
   })
 );
 
 router.get(
   "/:id",
-  asyncHandler(async (req, res) => {
+  asyncHandler(async (req: AuthedRequest, res) => {
     const tender = await prisma.tender.findUnique({
       where: { id: req.params.id },
       include: {
@@ -228,10 +238,11 @@ router.get(
         opportunityDetails: { include: { approvalRecord: true, bidSubmission: true } },
         emdRequirement: { include: { emdPayment: { include: { refund: true } } } },
         outcomeRecord: true,
+        checklistItems: { select: { phase: true, checked: true } },
       },
     });
     if (!tender) throw new HttpError(404, "Tender not found");
-    res.json(withTenderId(tender));
+    res.json(withTenderId(withStageProgress(tender)));
   })
 );
 
@@ -336,6 +347,11 @@ router.post(
       },
       include: { emdRequirement: { include: { emdPayment: true } } },
     });
+    // Seed the Evaluation checklist immediately so the tender list's progress badge
+    // (e.g. "0/9") is correct from the moment the tender exists, rather than showing
+    // "0/0" until someone first opens the Update page (which used to be the only
+    // place ensureDefaultChecklist ran).
+    await ensureDefaultChecklist(tender.id);
     await recordAudit(req, "CREATE", "Tender", tender.id);
     res.status(201).json(withTenderId(tender));
   })
@@ -343,7 +359,10 @@ router.post(
 
 router.patch(
   "/:id",
-  requireRole("EXTRACTOR", "ADMIN"),
+  // EXTRACTOR corrects their own extracted tender data (unrelated to the Update
+  // Tender workflow); BIDDER manages the tender going forward. ADMIN no longer
+  // edits tenders directly (see TenderListPage/TenderDetailPage canEdit).
+  requireRole("BIDDER", "EXTRACTOR"),
   asyncHandler(async (req: AuthedRequest, res) => {
     const data = createSchema.partial().parse(req.body);
     const { emdRequired, emdAmount, emdPaymentMode, paymentDeadline, refundConditions, tenderFeeRequired, tenderFeeAmount, customerName, contacts, industry, organizationType, ...tenderData } = data;

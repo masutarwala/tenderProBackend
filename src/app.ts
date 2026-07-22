@@ -17,9 +17,13 @@ import opportunitiesRoutes from "./modules/opportunities/opportunities.routes";
 import approvalsRoutes from "./modules/approvals/approvals.routes";
 import submissionsRoutes from "./modules/submissions/submissions.routes";
 import outcomesRoutes from "./modules/outcomes/outcomes.routes";
+import awardsRoutes from "./modules/awards/awards.routes";
+import stageApprovalsRoutes from "./modules/stageApprovals/stageApprovals.routes";
+import tenderQueriesRoutes from "./modules/tenderQueries/tenderQueries.routes";
 import emdRoutes from "./modules/emd/emd.routes";
 import reportsRoutes from "./modules/reports/reports.routes";
 import checklistRoutes from "./modules/checklist/checklist.routes";
+import approvalMasterRoutes from "./modules/approvalMaster/approvalMaster.routes";
 
 export const app = express();
 
@@ -43,9 +47,13 @@ app.use("/api/opportunities", opportunitiesRoutes);
 app.use("/api/approvals", approvalsRoutes);
 app.use("/api/submissions", submissionsRoutes);
 app.use("/api/outcomes", outcomesRoutes);
+app.use("/api/awards", awardsRoutes);
+app.use("/api/stage-approvals", stageApprovalsRoutes);
+app.use("/api/tender-queries", tenderQueriesRoutes);
 app.use("/api/emd", emdRoutes);
 app.use("/api/reports", reportsRoutes);
 app.use("/api/checklist", checklistRoutes);
+app.use("/api/approval-master", approvalMasterRoutes);
 
 app.use(errorHandler);
 

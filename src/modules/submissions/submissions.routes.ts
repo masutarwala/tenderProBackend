@@ -17,7 +17,7 @@ const schema = z.object({
 
 router.post(
   "/:tenderId",
-  requireRole("BIDDER", "ADMIN"),
+  requireRole("BIDDER"),
   asyncHandler(async (req: AuthedRequest, res) => {
     const data = schema.parse(req.body);
     const tender = await prisma.tender.findUnique({ where: { id: req.params.tenderId }, include: { opportunityDetails: true } });

@@ -13,6 +13,7 @@ const LOST_REASONS = ["PRICE", "OEM_PREFERENCE", "TERMS_AND_CONDITIONS", "LATE_S
 
 const schema = z.object({
   outcome: z.enum(["WON", "LOST"]),
+  submittedAt: z.coerce.date().optional(),
   orderId: z.string().optional(),
   contractValue: z.number().optional(),
   contractSignedDate: z.coerce.date().optional(),
@@ -21,15 +22,22 @@ const schema = z.object({
   bidAmount: z.number().optional(),
   winningBidAmount: z.number().optional(),
   remarks: z.string().optional(),
+  emdAmount: z.number().optional(),
+  emdDetails: z.string().optional(),
+  outcomeDate: z.coerce.date().optional(),
+  decisionDate: z.coerce.date().optional(),
 });
 
 // Recording the outcome auto-triggers the EMD refund workflow (spec §5.2 "Closed
 // Stage - EMD Refund Lifecycle", §11.2 "Refund Trigger: Automatic ... when bid
 // outcome recorded") by creating an EmdRefund row in INITIATED status, pre-filled
-// with the reason implied by the outcome, for Finance to action.
+// with the reason implied by the outcome, for Finance to action. BIDDER can also
+// record the outcome from the Update Tender page's Submission tab (the field team
+// logging the actual result) — that path skips the refund automation, which stays
+// tied to the CEO/SALES_MANAGER-level confirmation, same as before.
 router.post(
   "/:tenderId",
-  requireRole("CEO", "SALES_MANAGER", "ADMIN"),
+  requireRole("CEO", "SALES_MANAGER", "BIDDER"),
   asyncHandler(async (req: AuthedRequest, res) => {
     const data = schema.parse(req.body);
     const tender = await prisma.tender.findUnique({
@@ -44,8 +52,15 @@ router.post(
       create: { tenderId: tender.id, ...data, recordedById: req.user!.userId },
     });
 
+    // Recording the outcome is the Submission phase's completion event — closes
+    // the tender the same way finishing the old SUBMISSION checklist used to.
+    if (tender.bidStage === "SUBMISSION") {
+      await prisma.tender.update({ where: { id: tender.id }, data: { bidStage: "CLOSED" } });
+    }
+
+    const isFormalConfirmation = ["CEO", "SALES_MANAGER"].includes(req.user!.role);
     const payment = tender.emdRequirement?.emdPayment;
-    if (payment && payment.status === "PAID") {
+    if (isFormalConfirmation && payment && payment.status === "PAID") {
       const reason = data.outcome === "WON" ? "WON_NOT_REQUIRED" : "LOST_PER_TERMS";
       await prisma.emdRefund.upsert({
         where: { emdPaymentId: payment.id },

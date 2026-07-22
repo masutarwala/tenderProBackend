@@ -5,9 +5,10 @@ import { asyncHandler, HttpError } from "../../middleware/errorHandler";
 import { authenticate } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { recordAudit } from "../../middleware/audit";
+import { CHECKLIST_DEFINITION } from "../evaluation/evaluation.routes";
 
 const router = Router();
-router.use(authenticate, requireRole("ADMIN"));
+router.use(authenticate, requireRole("ADMIN", "BIDDER"));
 
 const createSchema = z.object({
   phase: z.enum(["EVALUATION", "PREPARATION", "SUBMISSION", "OUTCOME"]),
@@ -30,13 +31,29 @@ const reorderSchema = z.object({
 });
 
 // GET /api/checklist
+// Merges the fixed CHECKLIST_DEFINITION steps (built into every tender's checklist,
+// not stored in the DB) with the admin/bidder-authored MasterChecklistItem template
+// rows, so the config page shows the full picture of what a new tender's checklist
+// will contain. System rows are synthetic (id "system-<phase>-<order>") and read-only.
 router.get(
   "/",
   asyncHandler(async (_req, res) => {
     const items = await prisma.masterChecklistItem.findMany({
       orderBy: [{ phase: "asc" }, { order: "asc" }],
     });
-    res.json(items);
+
+    const systemItems = CHECKLIST_DEFINITION.filter(
+      (d) => d.phase === "EVALUATION" || d.phase === "PREPARATION"
+    ).map((d) => ({
+      id: `system-${d.phase}-${d.order}`,
+      phase: d.phase,
+      label: d.label,
+      order: d.order,
+      isDefault: true,
+      isSystem: true,
+    }));
+
+    res.json([...systemItems, ...items.map((i) => ({ ...i, isSystem: false }))]);
   })
 );
 
@@ -66,6 +83,7 @@ router.put(
   "/reorder",
   asyncHandler(async (req, res) => {
     const { items } = reorderSchema.parse(req.body);
+    if (items.some((i) => i.id.startsWith("system-"))) throw new HttpError(400, "System checklist steps cannot be reordered");
 
     await prisma.$transaction(
       items.map((item) =>
@@ -84,6 +102,7 @@ router.put(
 router.put(
   "/:id",
   asyncHandler(async (req, res) => {
+    if (req.params.id.startsWith("system-")) throw new HttpError(400, "System checklist steps cannot be edited");
     const data = updateSchema.parse(req.body);
     const item = await prisma.masterChecklistItem.update({
       where: { id: req.params.id },
@@ -99,6 +118,7 @@ router.put(
 router.delete(
   "/:id",
   asyncHandler(async (req, res) => {
+    if (req.params.id.startsWith("system-")) throw new HttpError(400, "System checklist steps cannot be deleted");
     const item = await prisma.masterChecklistItem.delete({
       where: { id: req.params.id },
     });
