@@ -5,7 +5,7 @@ import { asyncHandler, HttpError } from "../../middleware/errorHandler";
 import { authenticate, AuthedRequest } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { recordAudit } from "../../middleware/audit";
-import { canTransitionOpportunity } from "../../utils/tenderStateMachine";
+import { tryCompleteSubmission } from "../../utils/evaluationGate";
 
 const router = Router();
 router.use(authenticate);
@@ -20,10 +20,16 @@ router.post(
   requireRole("BIDDER"),
   asyncHandler(async (req: AuthedRequest, res) => {
     const data = schema.parse(req.body);
-    const tender = await prisma.tender.findUnique({ where: { id: req.params.tenderId }, include: { opportunityDetails: true } });
+    const tender = await prisma.tender.findUnique({
+      where: { id: req.params.tenderId },
+      include: { opportunityDetails: { include: { approvalRecord: true } } },
+    });
     if (!tender || !tender.opportunityDetails) throw new HttpError(404, "Opportunity not found");
-    if (!canTransitionOpportunity(tender.opportunityStatus as any, "BID")) {
-      throw new HttpError(400, `Cannot submit bid from status ${tender.opportunityStatus}`);
+    if (tender.stage !== "SUBMISSION") {
+      throw new HttpError(400, `Cannot submit bid while in stage ${tender.stage}`);
+    }
+    if (tender.opportunityDetails.approvalRecord?.overallStatus !== "COMPLETED") {
+      throw new HttpError(400, "Cannot submit bid until Finance/Sales Manager/CEO approval is complete");
     }
 
     const submission = await prisma.bidSubmission.upsert({
@@ -31,7 +37,7 @@ router.post(
       update: { ...data, submittedAt: new Date() },
       create: { opportunityId: tender.opportunityDetails.id, ...data, submittedAt: new Date() },
     });
-    await prisma.tender.update({ where: { id: tender.id }, data: { opportunityStatus: "BID", bidStage: "CLOSED" } });
+    await tryCompleteSubmission(tender.id);
 
     await recordAudit(req, "CREATE", "BidSubmission", submission.id);
     res.status(201).json(submission);

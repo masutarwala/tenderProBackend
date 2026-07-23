@@ -6,7 +6,6 @@ import { authenticate, AuthedRequest } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { recordAudit } from "../../middleware/audit";
 import { canOpportunityEnterApproval } from "../../utils/emdStateMachine";
-import { canTransitionOpportunity } from "../../utils/tenderStateMachine";
 
 const router = Router();
 router.use(authenticate);
@@ -36,24 +35,9 @@ router.patch(
   asyncHandler(async (req: AuthedRequest, res) => {
     const data = updateSchema.parse(req.body);
     
-    const opp = await prisma.$transaction(async (tx) => {
-      const updatedOpp = await tx.opportunityDetails.update({
-        where: { tenderId: req.params.tenderId },
-        data,
-      });
-
-      const tender = await tx.tender.findUnique({
-        where: { id: req.params.tenderId },
-      });
-
-      if (tender && !tender.opportunityStatus) {
-        await tx.tender.update({
-          where: { id: req.params.tenderId },
-          data: { opportunityStatus: "DRAFT" },
-        });
-      }
-
-      return updatedOpp;
+    const opp = await prisma.opportunityDetails.update({
+      where: { tenderId: req.params.tenderId },
+      data,
     });
 
     await recordAudit(req, "UPDATE", "OpportunityDetails", opp.id, data);
@@ -73,8 +57,8 @@ router.post(
       include: { emdRequirement: { include: { emdPayment: true } }, opportunityDetails: true },
     });
     if (!tender || !tender.opportunityDetails) throw new HttpError(404, "Opportunity not found");
-    if (!canTransitionOpportunity(tender.opportunityStatus as any, "PENDING_APPROVAL")) {
-      throw new HttpError(400, `Cannot submit for approval from status ${tender.opportunityStatus}`);
+    if (tender.stage !== "PREPARATION") {
+      throw new HttpError(400, `Cannot submit for approval while in stage ${tender.stage}`);
     }
 
     const emdOk = canOpportunityEnterApproval({
@@ -85,17 +69,14 @@ router.post(
       throw new HttpError(400, "EMD payment must be verified as PAID before the bid can be submitted for approval");
     }
 
-    const [updatedTender] = await prisma.$transaction([
-      prisma.tender.update({ where: { id: tender.id }, data: { opportunityStatus: "PENDING_APPROVAL" } }),
-      prisma.approvalRecord.upsert({
-        where: { opportunityId: tender.opportunityDetails.id },
-        update: { overallStatus: "PENDING" },
-        create: { opportunityId: tender.opportunityDetails.id, overallStatus: "PENDING" },
-      }),
-    ]);
+    await prisma.approvalRecord.upsert({
+      where: { opportunityId: tender.opportunityDetails.id },
+      update: { overallStatus: "PENDING" },
+      create: { opportunityId: tender.opportunityDetails.id, overallStatus: "PENDING" },
+    });
 
-    await recordAudit(req, "UPDATE", "Tender", updatedTender.id, { opportunityStatus: "PENDING_APPROVAL" });
-    res.json(updatedTender);
+    await recordAudit(req, "UPDATE", "Tender", tender.id, { submittedForApproval: true });
+    res.json(tender);
   })
 );
 

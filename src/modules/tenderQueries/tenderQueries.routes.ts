@@ -4,6 +4,7 @@ import { prisma } from "../../lib/prisma";
 import { asyncHandler, HttpError } from "../../middleware/errorHandler";
 import { authenticate, AuthedRequest } from "../../middleware/auth";
 import { recordAudit } from "../../middleware/audit";
+import { isPhaseLocked } from "../../utils/phaseLock";
 
 const router = Router();
 router.use(authenticate);
@@ -72,16 +73,11 @@ router.post(
 
     const tender = await prisma.tender.findUnique({
       where: { id: req.params.tenderId },
-      select: { bidStage: true },
+      select: { stage: true },
     });
     if (!tender) throw new HttpError(404, "Tender not found");
 
-    const phaseCompleted =
-      data.phase === "EVALUATION"
-        ? tender.bidStage !== "EVALUATION"
-        : tender.bidStage === "SUBMISSION" || tender.bidStage === "CLOSED";
-
-    if (phaseCompleted) {
+    if (isPhaseLocked(tender.stage, data.phase)) {
       throw new HttpError(400, `Cannot create query: the ${data.phase.toLowerCase()} stage is already completed.`);
     }
 
@@ -119,16 +115,11 @@ router.post(
 
     const tender = await prisma.tender.findUnique({
       where: { id: req.params.tenderId },
-      select: { bidStage: true },
+      select: { stage: true },
     });
     if (!tender) throw new HttpError(404, "Tender not found");
 
-    const phaseCompleted =
-      query.phase === "EVALUATION"
-        ? tender.bidStage !== "EVALUATION"
-        : tender.bidStage === "SUBMISSION" || tender.bidStage === "CLOSED";
-
-    if (phaseCompleted) {
+    if (isPhaseLocked(tender.stage, query.phase as "EVALUATION" | "PREPARATION")) {
       throw new HttpError(400, `Cannot reply: the ${query.phase.toLowerCase()} stage is already completed.`);
     }
 

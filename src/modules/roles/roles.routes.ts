@@ -18,6 +18,7 @@ const MANAGE_ROLES = ["ADMIN", "BIDDER"];
 export const MENU_KEYS = [
   "tenders",
   "awards",
+  "archive",
   "my-bids",
   "team-bids",
   "approvals",

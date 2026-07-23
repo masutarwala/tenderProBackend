@@ -4,6 +4,7 @@ import { prisma } from "../../lib/prisma";
 import { asyncHandler, HttpError } from "../../middleware/errorHandler";
 import { authenticate, AuthedRequest } from "../../middleware/auth";
 import { storageAdapter } from "../../storage/localDiskStorage";
+import { isPhaseLocked } from "../../utils/phaseLock";
 
 const router = Router();
 router.use(authenticate);
@@ -17,12 +18,9 @@ async function assertTenderPhaseUnlocked(entityType: string, entityId: string, c
   if (entityType !== "Tender" || !category) return;
   const phase = category.split(":")[0];
   if (phase !== "EVALUATION" && phase !== "PREPARATION") return;
-  const tender = await prisma.tender.findUnique({ where: { id: entityId }, select: { bidStage: true } });
+  const tender = await prisma.tender.findUnique({ where: { id: entityId }, select: { stage: true } });
   if (!tender) return;
-  const locked =
-    (phase === "EVALUATION" && tender.bidStage !== "EVALUATION") ||
-    (phase === "PREPARATION" && (tender.bidStage === "SUBMISSION" || tender.bidStage === "CLOSED"));
-  if (locked) throw new HttpError(400, "This stage is complete — documents are locked.");
+  if (isPhaseLocked(tender.stage, phase)) throw new HttpError(400, "This stage is complete — documents are locked.");
 }
 
 // entityType/entityId let any module (Tender, OpportunityDetails, EmdPayment, EmdRefund, PqiStatement)

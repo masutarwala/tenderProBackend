@@ -9,8 +9,8 @@ router.use(authenticate);
 router.get(
   "/bids-by-stage",
   asyncHandler(async (_req, res) => {
-    const grouped = await prisma.tender.groupBy({ by: ["bidStage"], _count: { _all: true } });
-    res.json(grouped.map((g) => ({ bidStage: g.bidStage, count: g._count._all })));
+    const grouped = await prisma.tender.groupBy({ by: ["stage"], _count: { _all: true } });
+    res.json(grouped.map((g) => ({ stage: g.stage, count: g._count._all })));
   })
 );
 
@@ -63,17 +63,18 @@ router.get(
         customer: true,
         outcomeRecord: true,
         emdRequirement: { include: { emdPayment: true } },
+        opportunityDetails: { include: { approvalRecord: true } },
       },
     });
 
     const now = new Date();
     const daysUntil = (d: Date | null) => (d ? Math.ceil((d.getTime() - now.getTime()) / 86400000) : null);
 
-    const isActive = (t: (typeof tenders)[number]) => t.bidStage !== "CLOSED";
+    const isActive = (t: (typeof tenders)[number]) => t.status !== "COMPLETED";
     const emdPending = (t: (typeof tenders)[number]) =>
       t.emdRequirement?.emdRequired && t.emdRequirement.emdPayment?.status !== "PAID";
     const notApproved = (t: (typeof tenders)[number]) =>
-      !t.opportunityStatus || !["APPROVED", "BID"].includes(t.opportunityStatus);
+      t.opportunityDetails?.approvalRecord?.overallStatus !== "COMPLETED";
     const isAtRisk = (t: (typeof tenders)[number]) => emdPending(t) || notApproved(t);
 
     // KPIs
@@ -81,7 +82,7 @@ router.get(
     const pipelineValue = activeTenders.reduce((s, t) => s + (t.tenderValue ?? 0), 0);
     const STAGE_WEIGHT: Record<string, number> = { EVALUATION: 0.2, PREPARATION: 0.5, SUBMISSION: 0.8 };
     const weightedPipelineValue = activeTenders.reduce(
-      (s, t) => s + (t.tenderValue ?? 0) * (STAGE_WEIGHT[t.bidStage] ?? 0.2),
+      (s, t) => s + (t.tenderValue ?? 0) * (STAGE_WEIGHT[t.stage] ?? 0.2),
       0
     );
     const won = tenders.filter((t) => t.outcomeRecord?.outcome === "WON");
@@ -94,36 +95,37 @@ router.get(
     });
     const atRiskCount = closingSoon.filter(isAtRisk).length;
 
-    // Funnel
-    const identified = tenders.filter((t) => t.prospectStatus !== "DROPPED");
-    const qualified = tenders.filter((t) => t.prospectStatus === "SHORTLISTED");
-    const submitted = tenders.filter(
-      (t) => ["SUBMISSION", "CLOSED"].includes(t.bidStage) || t.opportunityStatus === "BID"
-    );
+    // Funnel — every tender starts at Evaluation, so each later stage is a
+    // subset of tenders that reached at least that far in the pipeline.
+    const inEvaluation = tenders;
+    const inPreparation = tenders.filter((t) => t.stage !== "EVALUATION");
+    const inSubmission = tenders.filter((t) => t.stage === "SUBMISSION");
     const funnelStage = (label: string, list: typeof tenders) => ({
       label,
       count: list.length,
       value: list.reduce((s, t) => s + (t.tenderValue ?? 0), 0),
     });
     const funnel = [
-      funnelStage("Identified", identified),
-      funnelStage("Qualified", qualified),
-      funnelStage("Submitted", submitted),
+      funnelStage("Evaluation", inEvaluation),
+      funnelStage("Preparation", inPreparation),
+      funnelStage("Submission", inSubmission),
       funnelStage("Won", won),
     ];
 
-    // Buyer type
-    const buyerMap = new Map<string, { count: number; value: number }>();
+    // Buyer type — grouped case-insensitively so "gov" and "Government" (free-
+    // text field, entered inconsistently) don't fragment into separate slices.
+    const buyerMap = new Map<string, { label: string; count: number; value: number }>();
     for (const t of tenders) {
-      const label = t.customer?.organizationType?.trim() || "Unspecified";
-      const entry = buyerMap.get(label) ?? { count: 0, value: 0 };
+      const raw = t.customer?.organizationType?.trim() || "Unspecified";
+      const key = raw.toLowerCase();
+      const entry = buyerMap.get(key) ?? { label: raw, count: 0, value: 0 };
       entry.count += 1;
       entry.value += t.tenderValue ?? 0;
-      buyerMap.set(label, entry);
+      buyerMap.set(key, entry);
     }
     const buyerTotal = tenders.reduce((s, t) => s + (t.tenderValue ?? 0), 0);
-    const buyerType = Array.from(buyerMap.entries())
-      .map(([label, v]) => ({ label, count: v.count, value: v.value, pct: buyerTotal > 0 ? (v.value / buyerTotal) * 100 : 0 }))
+    const buyerType = Array.from(buyerMap.values())
+      .map((v) => ({ label: v.label, count: v.count, value: v.value, pct: buyerTotal > 0 ? (v.value / buyerTotal) * 100 : 0 }))
       .sort((a, b) => b.value - a.value);
 
     // Domain (Customer.industry array, fallback to tender.subIndustry)

@@ -5,7 +5,6 @@ import { asyncHandler, HttpError } from "../../middleware/errorHandler";
 import { authenticate, AuthedRequest } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { recordAudit } from "../../middleware/audit";
-import { canTransitionProspect } from "../../utils/tenderStateMachine";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { validateContacts, validateContactsDb } from "../../utils/validation";
@@ -24,16 +23,16 @@ function withTenderId<T extends { tenderSeq: number }>(tender: T) {
   return { ...tender, tenderId: formatTenderId(tender.tenderSeq) };
 }
 
-// Attaches { completed, total, status } for the tender's *current* bidStage,
+// Attaches { completed, total, status } for the tender's *current* stage,
 // derived from its checklist (see evaluation.routes.ts CHECKLIST_DEFINITION).
-function withStageProgress<T extends { bidStage: string; checklistItems: { phase: string; checked: boolean }[] }>(tender: T) {
+function withStageProgress<T extends { stage: string; status: string; checklistItems: { phase: string; checked: boolean }[] }>(tender: T) {
   const { checklistItems, ...rest } = tender;
-  return { ...rest, stageProgress: computeStageProgress(tender.bidStage, checklistItems) };
+  return { ...rest, stageProgress: computeStageProgress(tender.stage, tender.status, checklistItems) };
 }
 
 router.post(
   "/external-search",
-  requireRole("EXTRACTOR", "ADMIN"),
+  requireRole("EXTRACTOR", "BIDDER"),
   asyncHandler(async (req: AuthedRequest, res) => {
     const { tenderRefNo } = req.body;
     if (!tenderRefNo) {
@@ -204,9 +203,10 @@ const createSchema = z.object({
 router.get(
   "/",
   asyncHandler(async (req: AuthedRequest, res) => {
-    const { bidStage } = req.query as { bidStage?: string };
+    const { stage, status } = req.query as { stage?: string; status?: string };
     const where: any = {};
-    if (bidStage) where.bidStage = bidStage;
+    if (stage) where.stage = stage;
+    if (status) where.status = status;
     // Bidders/sales execs only see their assigned tenders (spec §6 role matrix)
     // if (req.user!.role === "BIDDER") where.bidderId = req.user!.userId;
     if (req.user!.role === "SALES_EXEC") where.salesExecId = req.user!.userId;
@@ -217,7 +217,7 @@ router.get(
         emdRequirement: { include: { emdPayment: true } },
         bidder: { select: { id: true, fullName: true } },
         salesExec: { select: { id: true, fullName: true } },
-        checklistItems: { select: { phase: true, checked: true } },
+        checklistItems: { where: { removed: false }, select: { phase: true, checked: true } },
         outcomeRecord: true,
       },
       orderBy: { createdAt: "desc" },
@@ -238,7 +238,7 @@ router.get(
         opportunityDetails: { include: { approvalRecord: true, bidSubmission: true } },
         emdRequirement: { include: { emdPayment: { include: { refund: true } } } },
         outcomeRecord: true,
-        checklistItems: { select: { phase: true, checked: true } },
+        checklistItems: { where: { removed: false }, select: { phase: true, checked: true } },
       },
     });
     if (!tender) throw new HttpError(404, "Tender not found");
@@ -248,7 +248,7 @@ router.get(
 
 router.post(
   "/",
-  requireRole("EXTRACTOR", "ADMIN"),
+  requireRole("EXTRACTOR", "BIDDER"),
   asyncHandler(async (req: AuthedRequest, res) => {
     const data = createSchema.parse(req.body);
 
@@ -523,47 +523,27 @@ router.patch(
   })
 );
 
-// Evaluator decision: Shortlist (assign bidder) or Drop (with reason) — spec §3.1
+// Evaluator decision: Shortlist (assign bidder) — spec §3.1. There is no Drop
+// path anymore; Evaluation only has a forward path.
 router.post(
   "/:id/decision",
   requireRole("EVALUATOR", "ADMIN"),
   asyncHandler(async (req: AuthedRequest, res) => {
-    const schema = z.union([
-      z.object({ decision: z.literal("SHORTLIST"), bidderId: z.string(), salesExecId: z.string().optional() }),
-      z.object({ decision: z.literal("DROP"), dropReason: z.enum(["NOT_INTERESTED", "NOT_QUALIFIED", "CANCELLED_BY_CUSTOMER"]) }),
-    ]);
+    const schema = z.object({ decision: z.literal("SHORTLIST"), bidderId: z.string(), salesExecId: z.string().optional() });
     const body = schema.parse(req.body);
     const tender = await prisma.tender.findUnique({ where: { id: req.params.id } });
     if (!tender) throw new HttpError(404, "Tender not found");
 
-    const targetStatus = body.decision === "SHORTLIST" ? "SHORTLISTED" : "DROPPED";
-    if (!canTransitionProspect(tender.prospectStatus as any, targetStatus)) {
-      throw new HttpError(400, `Cannot transition prospect status from ${tender.prospectStatus} to ${targetStatus}`);
-    }
-
-    if (body.decision === "SHORTLIST") {
-      const updated = await prisma.tender.update({
-        where: { id: tender.id },
-        data: {
-          prospectStatus: "SHORTLISTED",
-          bidStage: "EVALUATION",
-          bidderId: body.bidderId,
-          salesExecId: body.salesExecId,
-          opportunityDetails: { create: { preparedById: body.bidderId } },
-        },
-      });
-      await recordAudit(req, "UPDATE", "Tender", updated.id, { decision: "SHORTLIST" });
-      return res.json(withTenderId(updated));
-    } else {
-      await prisma.preliminaryTenderInfo.upsert({
-        where: { tenderId: tender.id },
-        update: { dropReason: body.dropReason },
-        create: { tenderId: tender.id, dropReason: body.dropReason },
-      });
-      const updated = await prisma.tender.update({ where: { id: tender.id }, data: { prospectStatus: "DROPPED" } });
-      await recordAudit(req, "UPDATE", "Tender", updated.id, { decision: "DROP", reason: body.dropReason });
-      return res.json(withTenderId(updated));
-    }
+    const updated = await prisma.tender.update({
+      where: { id: tender.id },
+      data: {
+        bidderId: body.bidderId,
+        salesExecId: body.salesExecId,
+        opportunityDetails: { create: { preparedById: body.bidderId } },
+      },
+    });
+    await recordAudit(req, "UPDATE", "Tender", updated.id, { decision: "SHORTLIST" });
+    return res.json(withTenderId(updated));
   })
 );
 

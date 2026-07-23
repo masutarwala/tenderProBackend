@@ -6,6 +6,7 @@ import { authenticate, AuthedRequest } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { recordAudit } from "../../middleware/audit";
 import { tryAdvanceFromEvaluation, tryAdvanceFromPreparation } from "../../utils/evaluationGate";
+import { isPhaseLocked } from "../../utils/phaseLock";
 
 const router = Router();
 router.use(authenticate);
@@ -26,12 +27,11 @@ const approvalInclude = {
 // a closed record — no more adding, editing, approving, or removing. Mirrors the
 // frontend's phaseLocked/tabIsComplete logic in TenderUpdatePage.tsx.
 async function assertPhaseUnlocked(tenderId: string, phase: string) {
-  const tender = await prisma.tender.findUnique({ where: { id: tenderId }, select: { bidStage: true } });
+  const tender = await prisma.tender.findUnique({ where: { id: tenderId }, select: { stage: true } });
   if (!tender) throw new HttpError(404, "Tender not found");
-  const locked =
-    (phase === "EVALUATION" && tender.bidStage !== "EVALUATION") ||
-    (phase === "PREPARATION" && (tender.bidStage === "SUBMISSION" || tender.bidStage === "CLOSED"));
-  if (locked) throw new HttpError(400, "This stage is complete — approvals are locked.");
+  if (isPhaseLocked(tender.stage, phase as "EVALUATION" | "PREPARATION")) {
+    throw new HttpError(400, "This stage is complete — approvals are locked.");
+  }
 }
 
 // Seeds a tender's approvals from the admin/bidder-authored MasterApprovalItem
@@ -45,6 +45,8 @@ async function ensureDefaultApprovals(tenderId: string) {
   });
   if (templateItems.length === 0) return;
 
+  // Includes soft-removed rows — a user who explicitly removed a default
+  // approval shouldn't have it silently reappear on the next fetch.
   const existing = await prisma.stageApproval.findMany({ where: { tenderId } });
   const existingKey = new Set(existing.map((e) => `${e.phase}:${e.title}:${e.roleId}`));
   const missing = templateItems.filter((t) => !existingKey.has(`${t.phase}:${t.title}:${t.roleId}`));
@@ -60,7 +62,7 @@ router.get(
   asyncHandler(async (req: AuthedRequest, res) => {
     await ensureDefaultApprovals(req.params.tenderId);
     const rows = await prisma.stageApproval.findMany({
-      where: { tenderId: req.params.tenderId },
+      where: { tenderId: req.params.tenderId, removed: false },
       include: approvalInclude,
       orderBy: { createdAt: "asc" },
     });
@@ -174,7 +176,7 @@ router.delete(
     const row = await prisma.stageApproval.findUnique({ where: { id: req.params.approvalId } });
     if (!row || row.tenderId !== req.params.tenderId) throw new HttpError(404, "Approval row not found");
     await assertPhaseUnlocked(req.params.tenderId, row.phase);
-    await prisma.stageApproval.delete({ where: { id: row.id } });
+    await prisma.stageApproval.update({ where: { id: row.id }, data: { removed: true } });
     await recordAudit(req, "DELETE", "StageApproval", row.id);
     res.status(204).send();
   })

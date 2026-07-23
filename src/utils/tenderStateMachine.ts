@@ -1,29 +1,13 @@
-// Encodes the legal Prospect -> Opportunity -> Closed transitions from spec §3.
-// Illegal jumps (e.g. Draft -> Bid) are rejected before they reach the database.
+// Single source of truth for tender pipeline progress: one Stage
+// (Evaluation -> Preparation -> Submission) and one Status (Pending/Completed)
+// per tender, replacing the old Prospect/Opportunity transition tables.
 
-export type ProspectStatus = "NEW" | "DROPPED" | "SHORTLISTED";
-export type OpportunityStatus = "DRAFT" | "PENDING_APPROVAL" | "APPROVED" | "SENT_BACK" | "REJECTED" | "BID";
+export type TenderStage = "EVALUATION" | "PREPARATION" | "SUBMISSION";
+export type TenderStatus = "PENDING" | "COMPLETED";
 
-const PROSPECT_TRANSITIONS: Record<ProspectStatus, ProspectStatus[]> = {
-  NEW: ["DROPPED", "SHORTLISTED"],
-  DROPPED: [],
-  SHORTLISTED: [],
-};
+const STAGE_ORDER: TenderStage[] = ["EVALUATION", "PREPARATION", "SUBMISSION"];
 
-const OPPORTUNITY_TRANSITIONS: Record<OpportunityStatus, OpportunityStatus[]> = {
-  DRAFT: ["PENDING_APPROVAL"],
-  PENDING_APPROVAL: ["APPROVED", "SENT_BACK", "REJECTED"],
-  APPROVED: ["BID"],
-  SENT_BACK: ["DRAFT"],
-  REJECTED: [],
-  BID: [],
-};
-
-export function canTransitionProspect(from: ProspectStatus, to: ProspectStatus): boolean {
-  return PROSPECT_TRANSITIONS[from]?.includes(to) ?? false;
-}
-
-export function canTransitionOpportunity(from: OpportunityStatus | null | undefined, to: OpportunityStatus): boolean {
-  const current = from || "DRAFT";
-  return OPPORTUNITY_TRANSITIONS[current]?.includes(to) ?? false;
+export function nextStage(stage: TenderStage): TenderStage {
+  const i = STAGE_ORDER.indexOf(stage);
+  return STAGE_ORDER[Math.min(i + 1, STAGE_ORDER.length - 1)];
 }

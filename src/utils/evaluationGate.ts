@@ -13,16 +13,16 @@ export async function isEvaluationGatePassed(tenderId: string): Promise<boolean>
   if (!decisionItem || !decisionItem.checked || decisionItem.decision !== "GO") return false;
 
   const requiredApprovals = await prisma.stageApproval.findMany({
-    where: { tenderId, phase: "EVALUATION", required: true },
+    where: { tenderId, phase: "EVALUATION", required: true, removed: false },
   });
   return requiredApprovals.every((a) => a.approved);
 }
 
 export async function tryAdvanceFromEvaluation(tenderId: string): Promise<void> {
   const tender = await prisma.tender.findUnique({ where: { id: tenderId } });
-  if (!tender || tender.bidStage !== "EVALUATION") return;
+  if (!tender || tender.stage !== "EVALUATION") return;
   if (await isEvaluationGatePassed(tenderId)) {
-    await prisma.tender.update({ where: { id: tenderId }, data: { bidStage: "PREPARATION" } });
+    await prisma.tender.update({ where: { id: tenderId }, data: { stage: "PREPARATION", status: "PENDING" } });
   }
 }
 
@@ -36,15 +36,30 @@ export async function isPreparationGatePassed(tenderId: string): Promise<boolean
   if (!submitItem || !submitItem.checked) return false;
 
   const requiredApprovals = await prisma.stageApproval.findMany({
-    where: { tenderId, phase: "PREPARATION", required: true },
+    where: { tenderId, phase: "PREPARATION", required: true, removed: false },
   });
   return requiredApprovals.every((a) => a.approved);
 }
 
 export async function tryAdvanceFromPreparation(tenderId: string): Promise<void> {
   const tender = await prisma.tender.findUnique({ where: { id: tenderId } });
-  if (!tender || tender.bidStage !== "PREPARATION") return;
+  if (!tender || tender.stage !== "PREPARATION") return;
   if (await isPreparationGatePassed(tenderId)) {
-    await prisma.tender.update({ where: { id: tenderId }, data: { bidStage: "SUBMISSION" } });
+    await prisma.tender.update({ where: { id: tenderId }, data: { stage: "SUBMISSION", status: "PENDING" } });
   }
+}
+
+// Marks the terminal Submission stage as done — reached once the bid is
+// actually submitted or an outcome is recorded. Stage stays SUBMISSION;
+// this is what "closed/awarded" means under the new model (no separate
+// CLOSED stage value).
+export async function tryCompleteSubmission(tenderId: string): Promise<void> {
+  const tender = await prisma.tender.findUnique({ where: { id: tenderId } });
+  if (!tender || tender.stage !== "SUBMISSION") return;
+  // Idempotent: preserves the original submission moment if the outcome is
+  // ever re-recorded/edited later, rather than re-stamping the current time.
+  await prisma.tender.update({
+    where: { id: tenderId },
+    data: { status: "COMPLETED", submittedAt: tender.submittedAt ?? new Date() },
+  });
 }

@@ -17,7 +17,7 @@ CREATE TYPE "OpportunityStatus" AS ENUM ('DRAFT', 'PENDING_APPROVAL', 'APPROVED'
 CREATE TYPE "ApprovalOverallStatus" AS ENUM ('PENDING', 'APPROVED', 'SENT_BACK', 'REJECTED');
 
 -- CreateEnum
-CREATE TYPE "Outcome" AS ENUM ('WON', 'LOST');
+CREATE TYPE "Outcome" AS ENUM ('WON', 'LOST', 'NO_GO');
 
 -- CreateEnum
 CREATE TYPE "LostReason" AS ENUM ('PRICE', 'OEM_PREFERENCE', 'TERMS_AND_CONDITIONS', 'LATE_SUBMISSION', 'TECHNICAL_DISQUALIFICATION', 'OTHER');
@@ -30,6 +30,12 @@ CREATE TYPE "EmdRefundStatus" AS ENUM ('INITIATED', 'IN_PROGRESS', 'RECEIVED', '
 
 -- CreateEnum
 CREATE TYPE "EmdRefundReason" AS ENUM ('WON_NOT_REQUIRED', 'LOST_PER_TERMS', 'BID_REJECTED', 'TECHNICAL_DISQUALIFICATION', 'OTHER');
+
+-- CreateEnum
+CREATE TYPE "QueryVisibility" AS ENUM ('PUBLIC', 'PRIVATE');
+
+-- CreateEnum
+CREATE TYPE "QueryStatus" AS ENUM ('OPEN', 'RESOLVED');
 
 -- CreateTable
 CREATE TABLE "Role" (
@@ -174,6 +180,7 @@ CREATE TABLE "Document" (
     "entityType" TEXT NOT NULL,
     "entityId" TEXT NOT NULL,
     "category" TEXT,
+    "title" TEXT,
     "fileName" TEXT NOT NULL,
     "storageKey" TEXT NOT NULL,
     "mimeType" TEXT,
@@ -326,6 +333,7 @@ CREATE TABLE "OutcomeRecord" (
     "id" TEXT NOT NULL,
     "tenderId" TEXT NOT NULL,
     "outcome" "Outcome" NOT NULL,
+    "submittedAt" TIMESTAMP(3),
     "orderId" TEXT,
     "contractValue" DOUBLE PRECISION,
     "contractSignedDate" TIMESTAMP(3),
@@ -336,8 +344,35 @@ CREATE TABLE "OutcomeRecord" (
     "remarks" TEXT,
     "recordedById" TEXT,
     "recordedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "emdAmount" DOUBLE PRECISION,
+    "emdDetails" TEXT,
+    "outcomeDate" TIMESTAMP(3),
+    "decisionDate" TIMESTAMP(3),
 
     CONSTRAINT "OutcomeRecord_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "AwardFormalities" (
+    "id" TEXT NOT NULL,
+    "tenderId" TEXT NOT NULL,
+    "contractSigned" BOOLEAN NOT NULL DEFAULT false,
+    "contractSignedDate" TIMESTAMP(3),
+    "poReceived" BOOLEAN NOT NULL DEFAULT false,
+    "poNumber" TEXT,
+    "poDate" TIMESTAMP(3),
+    "poValue" DOUBLE PRECISION,
+    "bgRequired" BOOLEAN NOT NULL DEFAULT false,
+    "bgIssued" BOOLEAN NOT NULL DEFAULT false,
+    "bgAmount" DOUBLE PRECISION,
+    "bgBankName" TEXT,
+    "bgValidityDate" TIMESTAMP(3),
+    "formalitiesComplete" BOOLEAN NOT NULL DEFAULT false,
+    "updatedById" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "AwardFormalities_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -421,11 +456,56 @@ CREATE TABLE "TenderUpdateChecklist" (
     "order" INTEGER NOT NULL,
     "checked" BOOLEAN NOT NULL DEFAULT false,
     "remarks" TEXT,
+    "decision" TEXT,
     "updatedById" TEXT,
+    "assignedRoleId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "TenderUpdateChecklist_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "StageApproval" (
+    "id" TEXT NOT NULL,
+    "tenderId" TEXT NOT NULL,
+    "phase" TEXT NOT NULL,
+    "title" TEXT NOT NULL DEFAULT '',
+    "roleId" TEXT NOT NULL,
+    "required" BOOLEAN NOT NULL DEFAULT true,
+    "approved" BOOLEAN NOT NULL DEFAULT false,
+    "approvedAt" TIMESTAMP(3),
+    "approvedById" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "StageApproval_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "TenderQuery" (
+    "id" TEXT NOT NULL,
+    "tenderId" TEXT NOT NULL,
+    "phase" TEXT NOT NULL,
+    "message" TEXT NOT NULL,
+    "visibility" "QueryVisibility" NOT NULL DEFAULT 'PUBLIC',
+    "targetRoleId" TEXT,
+    "status" "QueryStatus" NOT NULL DEFAULT 'OPEN',
+    "createdById" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "TenderQuery_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "TenderQueryReply" (
+    "id" TEXT NOT NULL,
+    "queryId" TEXT NOT NULL,
+    "message" TEXT NOT NULL,
+    "createdById" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "TenderQueryReply_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -457,6 +537,20 @@ CREATE TABLE "MasterChecklistItem" (
     CONSTRAINT "MasterChecklistItem_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "MasterApprovalItem" (
+    "id" TEXT NOT NULL,
+    "phase" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "roleId" TEXT NOT NULL,
+    "required" BOOLEAN NOT NULL DEFAULT true,
+    "isDefault" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "MasterApprovalItem_pkey" PRIMARY KEY ("id")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "Role_name_key" ON "Role"("name");
 
@@ -485,6 +579,9 @@ CREATE UNIQUE INDEX "BidSubmission_opportunityId_key" ON "BidSubmission"("opport
 CREATE UNIQUE INDEX "OutcomeRecord_tenderId_key" ON "OutcomeRecord"("tenderId");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "AwardFormalities_tenderId_key" ON "AwardFormalities"("tenderId");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "TenderFeeEmdRequirement_tenderId_key" ON "TenderFeeEmdRequirement"("tenderId");
 
 -- CreateIndex
@@ -492,6 +589,12 @@ CREATE UNIQUE INDEX "EmdPayment_requirementId_key" ON "EmdPayment"("requirementI
 
 -- CreateIndex
 CREATE UNIQUE INDEX "EmdRefund_emdPaymentId_key" ON "EmdRefund"("emdPaymentId");
+
+-- CreateIndex
+CREATE INDEX "StageApproval_tenderId_phase_roleId_idx" ON "StageApproval"("tenderId", "phase", "roleId");
+
+-- CreateIndex
+CREATE INDEX "TenderQuery_tenderId_phase_idx" ON "TenderQuery"("tenderId", "phase");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "TenderOutput_tenderId_key" ON "TenderOutput"("tenderId");
@@ -554,6 +657,12 @@ ALTER TABLE "BidSubmission" ADD CONSTRAINT "BidSubmission_opportunityId_fkey" FO
 ALTER TABLE "OutcomeRecord" ADD CONSTRAINT "OutcomeRecord_tenderId_fkey" FOREIGN KEY ("tenderId") REFERENCES "Tender"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "AwardFormalities" ADD CONSTRAINT "AwardFormalities_tenderId_fkey" FOREIGN KEY ("tenderId") REFERENCES "Tender"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "AwardFormalities" ADD CONSTRAINT "AwardFormalities_updatedById_fkey" FOREIGN KEY ("updatedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "TenderFeeEmdRequirement" ADD CONSTRAINT "TenderFeeEmdRequirement_tenderId_fkey" FOREIGN KEY ("tenderId") REFERENCES "Tender"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
@@ -578,5 +687,35 @@ ALTER TABLE "TenderUpdateChecklist" ADD CONSTRAINT "TenderUpdateChecklist_tender
 ALTER TABLE "TenderUpdateChecklist" ADD CONSTRAINT "TenderUpdateChecklist_updatedById_fkey" FOREIGN KEY ("updatedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "TenderUpdateChecklist" ADD CONSTRAINT "TenderUpdateChecklist_assignedRoleId_fkey" FOREIGN KEY ("assignedRoleId") REFERENCES "Role"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "StageApproval" ADD CONSTRAINT "StageApproval_tenderId_fkey" FOREIGN KEY ("tenderId") REFERENCES "Tender"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "StageApproval" ADD CONSTRAINT "StageApproval_roleId_fkey" FOREIGN KEY ("roleId") REFERENCES "Role"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "StageApproval" ADD CONSTRAINT "StageApproval_approvedById_fkey" FOREIGN KEY ("approvedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TenderQuery" ADD CONSTRAINT "TenderQuery_tenderId_fkey" FOREIGN KEY ("tenderId") REFERENCES "Tender"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TenderQuery" ADD CONSTRAINT "TenderQuery_targetRoleId_fkey" FOREIGN KEY ("targetRoleId") REFERENCES "Role"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TenderQuery" ADD CONSTRAINT "TenderQuery_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TenderQueryReply" ADD CONSTRAINT "TenderQueryReply_queryId_fkey" FOREIGN KEY ("queryId") REFERENCES "TenderQuery"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TenderQueryReply" ADD CONSTRAINT "TenderQueryReply_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "TenderOutput" ADD CONSTRAINT "TenderOutput_tenderId_fkey" FOREIGN KEY ("tenderId") REFERENCES "Tender"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "MasterApprovalItem" ADD CONSTRAINT "MasterApprovalItem_roleId_fkey" FOREIGN KEY ("roleId") REFERENCES "Role"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 

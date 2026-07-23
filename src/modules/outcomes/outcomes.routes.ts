@@ -5,6 +5,7 @@ import { asyncHandler, HttpError } from "../../middleware/errorHandler";
 import { authenticate, AuthedRequest } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { recordAudit } from "../../middleware/audit";
+import { tryCompleteSubmission } from "../../utils/evaluationGate";
 
 const router = Router();
 router.use(authenticate);
@@ -54,9 +55,7 @@ router.post(
 
     // Recording the outcome is the Submission phase's completion event — closes
     // the tender the same way finishing the old SUBMISSION checklist used to.
-    if (tender.bidStage === "SUBMISSION") {
-      await prisma.tender.update({ where: { id: tender.id }, data: { bidStage: "CLOSED" } });
-    }
+    await tryCompleteSubmission(tender.id);
 
     const isFormalConfirmation = ["CEO", "SALES_MANAGER"].includes(req.user!.role);
     const payment = tender.emdRequirement?.emdPayment;

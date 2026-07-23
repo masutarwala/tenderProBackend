@@ -124,8 +124,8 @@ async function main() {
         "Amended via corrigendum: delivery timeline 8->15 weeks, bid validity 180->90 days, data availability 99.999%->99.9999%.",
       customerId: customer.id,
       tenderType: "HARDWARE",
-      bidStage: "EVALUATION",
-      prospectStatus: "NEW",
+      stage: "EVALUATION",
+      status: "PENDING",
       publishedDate: new Date("2026-05-07"),
       preBidDate: new Date("2026-05-19T12:30:00"),
       closingDate: new Date("2026-06-08T17:30:00"),
@@ -154,6 +154,40 @@ async function main() {
       },
     },
   });
+
+  console.log("Seeding additional tenders covering every stage x status combination...");
+  const stageStatusFixtures: { seq: string; title: string; stage: "EVALUATION" | "PREPARATION" | "SUBMISSION"; status: "PENDING" | "COMPLETED"; outcome?: "WON" | "NO_GO" }[] = [
+    { seq: "0600", title: "QA Fixture - Evaluation Pending", stage: "EVALUATION", status: "PENDING" },
+    { seq: "0601", title: "QA Fixture - Evaluation Completed (No-Go)", stage: "EVALUATION", status: "COMPLETED", outcome: "NO_GO" },
+    { seq: "0602", title: "QA Fixture - Preparation Pending", stage: "PREPARATION", status: "PENDING" },
+    { seq: "0603", title: "QA Fixture - Preparation Completed", stage: "PREPARATION", status: "COMPLETED" },
+    { seq: "0604", title: "QA Fixture - Submission Pending", stage: "SUBMISSION", status: "PENDING" },
+    { seq: "0605", title: "QA Fixture - Submission Completed (Won)", stage: "SUBMISSION", status: "COMPLETED", outcome: "WON" },
+  ];
+  for (const fixture of stageStatusFixtures) {
+    const qaTender = await prisma.tender.upsert({
+      where: { tenderRefNo: `QA/2026/${fixture.seq}` },
+      update: {},
+      create: {
+        tenderRefNo: `QA/2026/${fixture.seq}`,
+        title: fixture.title,
+        description: "Seeded fixture for stage/status QA coverage.",
+        customerId: customer.id,
+        tenderType: "HARDWARE",
+        stage: fixture.stage,
+        status: fixture.status,
+        closingDate: new Date("2026-12-31"),
+        extractorId: extractor?.id,
+      },
+    });
+    if (fixture.outcome) {
+      await prisma.outcomeRecord.upsert({
+        where: { tenderId: qaTender.id },
+        update: {},
+        create: { tenderId: qaTender.id, outcome: fixture.outcome },
+      });
+    }
+  }
 
   console.log("Seeding master checklist items...");
   const defaultEvaluationSteps = [

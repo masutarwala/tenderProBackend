@@ -10,7 +10,6 @@ const router = Router();
 router.use(authenticate);
 
 const decisionSchema = z.object({
-  approved: z.boolean(),
   comments: z.string().optional(),
 });
 
@@ -19,7 +18,7 @@ router.get(
   requireRole("FINANCE", "SALES_MANAGER", "CEO", "ADMIN"),
   asyncHandler(async (_req, res) => {
     const tenders = await prisma.tender.findMany({
-      where: { opportunityStatus: "PENDING_APPROVAL" },
+      where: { opportunityDetails: { approvalRecord: { overallStatus: "PENDING" } } },
       include: {
         customer: true,
         opportunityDetails: { include: { approvalRecord: true } },
@@ -31,8 +30,9 @@ router.get(
 );
 
 // Finance, Sales Manager, and CEO each PATCH independently, in any order
-// (spec §14 "Concurrent approvals"). Overall status flips to APPROVED only
-// once all three have approved; any rejection immediately sets SENT_BACK/REJECTED.
+// (spec §14 "Concurrent approvals"). Every decision is an approve — there is
+// no reject/send-back path. Overall status flips to COMPLETED once all three
+// have approved.
 async function applyDecision(
   req: AuthedRequest,
   approverField: "financeApproved" | "salesMgrApproved" | "ceoApproved",
@@ -41,7 +41,7 @@ async function applyDecision(
   commentsField: "financeComments" | "salesMgrComments" | "ceoComments"
 ) {
   const { opportunityId } = req.params;
-  const { approved, comments } = decisionSchema.parse(req.body);
+  const { comments } = decisionSchema.parse(req.body);
 
   const existing = await prisma.approvalRecord.findUnique({ where: { opportunityId } });
   if (!existing) throw new HttpError(404, "Approval record not found");
@@ -49,36 +49,22 @@ async function applyDecision(
   const updated = await prisma.approvalRecord.update({
     where: { opportunityId },
     data: {
-      [approverField]: approved,
+      [approverField]: true,
       [approverIdField]: req.user!.userId,
       [atField]: new Date(),
       [commentsField]: comments,
     },
   });
 
-  let overallStatus: "PENDING" | "APPROVED" | "SENT_BACK" | "REJECTED" = "PENDING";
-  if (updated.financeApproved === false || updated.salesMgrApproved === false || updated.ceoApproved === false) {
-    overallStatus = approved === false ? "SENT_BACK" : overallStatus;
-  }
   const allApproved = updated.financeApproved && updated.salesMgrApproved && updated.ceoApproved;
-  if (allApproved) overallStatus = "APPROVED";
-  else if (approved === false) overallStatus = "SENT_BACK";
+  const overallStatus = allApproved ? "COMPLETED" : "PENDING";
 
   const final = await prisma.approvalRecord.update({
     where: { opportunityId },
-    data: {
-      overallStatus,
-      sentBackComments: overallStatus === "SENT_BACK" ? comments : existing.sentBackComments,
-    },
+    data: { overallStatus },
   });
 
-  const opp = await prisma.opportunityDetails.findUnique({ where: { id: opportunityId } });
-  if (opp) {
-    const newOpportunityStatus = overallStatus === "APPROVED" ? "APPROVED" : overallStatus === "SENT_BACK" ? "SENT_BACK" : "PENDING_APPROVAL";
-    await prisma.tender.update({ where: { id: opp.tenderId }, data: { opportunityStatus: newOpportunityStatus } });
-  }
-
-  await recordAudit(req, "UPDATE", "ApprovalRecord", final.id, { [approverField]: approved, overallStatus });
+  await recordAudit(req, "UPDATE", "ApprovalRecord", final.id, { [approverField]: true, overallStatus });
   return final;
 }
 
