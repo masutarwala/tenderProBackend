@@ -55,7 +55,7 @@ router.post(
     const passwordHash = await hashPassword(password);
     const user = await prisma.user.create({ data: { ...data, passwordHash } });
     await recordAudit(req, "CREATE", "User", user.id);
-    res.status(201).json({ id: user.id, email: user.email, fullName: user.fullName, isAdmin: user.isAdmin });
+    res.status(201).json({ id: user.id, email: user.email, fullName: user.fullName, isAdmin: user.isAdmin, canAddTender: user.canAddTender, menuKeys: user.menuKeys });
   })
 );
 
@@ -69,7 +69,7 @@ router.patch(
     if (password) updateData.passwordHash = await hashPassword(password);
     const user = await prisma.user.update({ where: { id: req.params.id }, data: updateData });
     await recordAudit(req, "UPDATE", "User", user.id, data);
-    res.json({ id: user.id, email: user.email, fullName: user.fullName, isAdmin: user.isAdmin, active: user.active });
+    res.json({ id: user.id, email: user.email, fullName: user.fullName, isAdmin: user.isAdmin, active: user.active, canAddTender: user.canAddTender, menuKeys: user.menuKeys });
   })
 );
 

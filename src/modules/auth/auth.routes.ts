@@ -29,9 +29,10 @@ router.post(
   asyncHandler(async (req, res) => {
     const { email, password } = loginSchema.parse(req.body);
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user || !user.active) throw new HttpError(401, "Invalid credentials");
+    if (!user) throw new HttpError(401, "Invalid email or password");
+    if (!user.active) throw new HttpError(403, "Your account has been deactivated. Please contact an admin.");
     const ok = await verifyPassword(password, user.passwordHash);
-    if (!ok) throw new HttpError(401, "Invalid credentials");
+    if (!ok) throw new HttpError(401, "Invalid email or password");
     const token = signToken({ userId: user.id, isAdmin: user.isAdmin });
     res.json({ token, user: serializeUser(user) });
   })
