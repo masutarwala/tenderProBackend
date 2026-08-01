@@ -16,8 +16,8 @@ enum TenderType {
 }
 
 // Single source of truth for tender pipeline progress, shown everywhere as one
-// Stage + Status pair (see tenders module) instead of the old bidStage/
-// prospectStatus/opportunityStatus trio.
+// Stage + Status pair. Both are now manually editable (by Admin or the
+// assigned Bidder) rather than automatically gated.
 enum TenderStage {
   EVALUATION
   PREPARATION
@@ -32,632 +32,219 @@ enum TenderStatus {
 enum Outcome {
   WON
   LOST
-  NO_GO // Evaluation-stage decision — closed before ever reaching Submission
+  DROPPED // Legacy / settable from any stage, not just Evaluation
+  NO_GO
+  DROPPED_BY_US
+  WITHDRAWN_BY_CLIENT
 }
 
-enum LostReason {
-  PRICE
-  OEM_PREFERENCE
-  TERMS_AND_CONDITIONS
-  LATE_SUBMISSION
-  TECHNICAL_DISQUALIFICATION
-  OTHER
+enum AwardCriteria {
+  AUCTION
+  LOWEST
+  QCBS
 }
 
-enum EmdPaymentStatus {
+enum TaskStatus {
   PENDING
-  INITIATED
-  SUBMITTED
-  PAID
-  FAILED
+  COMPLETED
 }
 
-enum EmdRefundStatus {
-  INITIATED
-  IN_PROGRESS
-  RECEIVED
-  ADJUSTED
-  RETAINED
-  CANCELLED
+enum DocumentSide {
+  TO_CLIENT
+  FROM_CLIENT
 }
 
-enum EmdRefundReason {
-  WON_NOT_REQUIRED
-  LOST_PER_TERMS
-  BID_REJECTED
-  TECHNICAL_DISQUALIFICATION
-  OTHER
-}
+// ============ USERS ============
 
-// ============ MASTER FILES ============
-
-// Roles are fully admin-manageable (spec extension): CRUD from the admin console,
-// each holding the set of sidebar menu keys its users are allowed to see.
-// The 8 roles created by prisma/seed.ts are marked isSystem=true — their `name`
-// is locked because backend route guards (requireRole) key off it directly, but
-// their description and menuKeys remain editable. Admin can freely create
-// additional non-system roles with their own menu access.
-model Role {
-  id          String   @id @default(cuid())
-  name        String   @unique
-  description String?
-  isSystem    Boolean  @default(false)
-  menuKeys    String[] @default([])
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  users User[]
-  checklistAssignments TenderUpdateChecklist[]
-  stageApprovals StageApproval[]
-  targetedQueries TenderQuery[]
-  masterApprovalItems MasterApprovalItem[]
-}
-
+// RBAC removed: a user is either an Admin (full access) or a normal user
+// scoped by menuKeys. No Role model, no per-role permissions.
 model User {
-  id            String   @id @default(cuid())
-  email         String   @unique
-  passwordHash  String
-  fullName      String
-  roleId        String
-  role          Role     @relation(fields: [roleId], references: [id])
-  department    String?
-  managerId     String?
-  manager       User?    @relation("UserManager", fields: [managerId], references: [id])
-  reports       User[]   @relation("UserManager")
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  extractedTenders   Tender[]            @relation("TenderExtractor")
-  assignedBidderOn   Tender[]            @relation("TenderBidder")
-  ownedAsSalesExec   Tender[]            @relation("TenderSalesExec")
-  evaluationRecords  EvaluationRecord[]
-  emdPaymentsEntered EmdPayment[]        @relation("EmdPaymentEnteredBy")
-  emdRefundsInited   EmdRefund[]         @relation("EmdRefundInitiatedBy")
-  auditLogs          AuditLog[]
-  documentsUploaded  Document[]
-  checklistUpdates   TenderUpdateChecklist[]
-  awardFormalityUpdates AwardFormalities[]
-  stageApprovalsGiven StageApproval[]
-  tenderQueriesCreated TenderQuery[] @relation("TenderQueryCreatedBy")
-  tenderQueryRepliesCreated TenderQueryReply[] @relation("TenderQueryReplyCreatedBy")
-}
-
-model Customer {
-  id              String   @id @default(cuid())
-  name            String
-  primaryContact  String?
-  alternateContact String?
-  billingAddress  String?
-  shippingAddress String?
-  industry        String[] @default([])
-  organizationType String?
-  organizationSize String?
-  procurementNotes String?
-  country         String?
-  state           String?
-  city            String?
-  address         String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  tenders  Tender[]
-  contacts CustomerContact[]
-}
-
-model CustomerContact {
-  id          String   @id @default(cuid())
-  name        String
-  email       String?
-  phone       String?
-  designation String?
-  customerId  String
-  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-}
-
-
-model PqiStatement {
-  id            String   @id @default(cuid())
-  version       Int
-  effectiveDate DateTime
-  qualifications String
-  technicalCapabilities String
-  financialStanding String
-  industryExperience String
-  govtRegistrations String?
-  isoCertifications String?
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-}
-
-model InterestCriterion {
   id           String   @id @default(cuid())
-  category     String   // Hardware/Software/Services
-  industryType String?
-  geography    String?
-  organizationType String?
-  organizationSizeMin String?
-  organizationSizeMax String?
-  scoringWeight Float   @default(0)
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  isAdmin      Boolean  @default(false)
+  // Which of the 4 left-nav menus this user can see: "dashboard" | "my-bids" |
+  // "users" | "task-list". Admins see all 4 regardless of this list.
+  menuKeys     String[] @default([])
   active       Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
-}
 
-model DecisionMatrix {
-  id           String   @id @default(cuid())
-  name         String
-  active       Boolean  @default(true)
-  shortlistThreshold Float @default(60)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  criteria         DecisionMatrixCriterion[]
-  evaluationRecords EvaluationRecord[]
-}
-
-model DecisionMatrixCriterion {
-  id        String   @id @default(cuid())
-  matrixId  String
-  matrix    DecisionMatrix @relation(fields: [matrixId], references: [id], onDelete: Cascade)
-  name      String
-  weight    Float
-  scoringScaleMax Int @default(10)
-  autoCalculated Boolean @default(false)
-
-  scores EvaluationScore[]
-}
-
-model DocumentTemplate {
-  id         String   @id @default(cuid())
-  name       String
-  category   String   // Hardware/Software/Services/General
-  tenderType TenderType?
-  storageKey String
-  version    Int      @default(1)
-  createdAt  DateTime @default(now())
-}
-
-// Generic document metadata, storage delegated to storage adapter (local disk in
-// dev; swaps to SharePoint/Microsoft Graph in production — see storageAdapter.ts).
-model Document {
-  id           String   @id @default(cuid())
-  entityType   String   // "Tender" | "Opportunity" | "EmdPayment" | "EmdRefund" | "Pqi"
-  entityId     String
-  category     String?  // e.g. "NIT", "OTHER", "CORRIGENDUM" — free-form grouping label for the UI
-  title        String?  // user-supplied display title (required by the Tender Update-page uploader, optional elsewhere)
-  fileName     String
-  storageKey   String
-  mimeType     String?
-  sizeBytes    Int?
-  uploadedById String?
-  uploadedBy   User?    @relation(fields: [uploadedById], references: [id])
-  uploadedAt   DateTime @default(now())
+  bidderOn         Tender[]     @relation("TenderBidder")
+  salesExecOn      Tender[]     @relation("TenderSalesExec")
+  auditLogs        AuditLog[]
+  documentsUploaded Document[]
+  assignedTasks    TenderTask[] @relation("TaskAssignedUser")
+  completedTasks   TenderTask[] @relation("TaskCompletedBy")
+  comments         Comment[]
 }
 
 // ============ TRANSACTIONAL ============
 
 model Tender {
-  id            String     @id @default(cuid())
+  id          String @id @default(cuid())
   // Internal auto-increment used only to derive the display-facing "TENDER001"
   // style ID (see formatTenderId() in tenders.routes.ts) — not exposed directly.
-  tenderSeq     Int        @unique @default(autoincrement())
-  tenderRefNo   String     @unique
-  portalSource  String?
-  title         String
-  description   String?
-  summary       String?
-  customerId    String?
-  customer      Customer?  @relation(fields: [customerId], references: [id])
+  tenderSeq   Int    @unique @default(autoincrement())
+  tenderRefNo String @unique
+  title       String
+  description String?
 
-  tenderType    TenderType
-  stage         TenderStage  @default(EVALUATION)
-  status        TenderStatus @default(PENDING)
-  publishedDate DateTime?
-  closingDate   DateTime?
-  preBidDate    DateTime?
+  tenderType TenderType
+  stage      TenderStage  @default(EVALUATION)
+  status     TenderStatus @default(PENDING)
+
+  publishedDate  DateTime?
+  closingDate    DateTime?
+  preBidDate     DateTime?
   bidOpeningDate DateTime?
-  bidValidityDays Int?
-  deliveryTimelineWeeks Int?
-  contractPeriodYears Int?
 
-  // Raw fields captured verbatim from portal extraction feeds (TenderTiger/GeM JSON
-  // export etc.) — spec §2.2 Tender: "Extracted data: Item details, quantities,
-  // delivery terms...". Kept alongside the normalized fields above rather than
-  // replacing them, since not every tender is extracted from a portal export.
-  tcNo                String?  // portal's internal tender control number (their "tcno")
-  sourceUrl           String?  // originating listing URL (their "originalsource")
-  country             String?
-  state               String?
-  city                String?
-  address             String?
-  tenderValue         Float?
-  biddingType         String?  // e.g. "NCB", "ICB"
-  isFreeTender        Boolean  @default(false)
-  keyword             String?
+  // Financial section (Tender Layout wireframe)
+  tenderValue     Float? // "Bid Worth" — initial estimated value
+  bidValue        Float? // "Bid Value" — entered/updated later
+  emdAmount       Float?
+  awardCriteria   AwardCriteria?
+  bidValidity     String?
+  securityDeposit String?
+  slaPenalties    String?
+  paymentTerms    String?
+  contractPeriod  String?
 
-  subIndustry         String?
-  companySubIndustry  String?
-  extractedCompanyName String? // buyer org name as extracted, before/without a linked Customer record
+  // Customer Relation
+  customerId      String?
+  customer        Customer? @relation(fields: [customerId], references: [id])
+  
+  decisionDate    DateTime?
 
+  bidderId    String?
+  bidder      User?   @relation("TenderBidder", fields: [bidderId], references: [id])
+  salesExecId String?
+  salesExec   User?   @relation("TenderSalesExec", fields: [salesExecId], references: [id])
 
-  extractorId   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  extractor     User?      @relation("TenderExtractor", fields: [extractorId], references: [id])
-  bidderId      String?
-  bidder        User?      @relation("TenderBidder", fields: [bidderId], references: [id])
-  salesExecId   String?
-  salesExec     User?      @relation("TenderSalesExec", fields: [salesExecId], references: [id])
-
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-  // Stamped once, automatically, the moment the Win/Lose outcome is recorded
-  // (see tryCompleteSubmission in evaluationGate.ts) — distinct from
-  // OutcomeRecord.submittedAt / BidSubmission.submittedAt, which are separate,
-  // user-editable fields on other models.
-  submittedAt   DateTime?
-
-  preliminaryInfo   PreliminaryTenderInfo?
-  evaluationRecords EvaluationRecord[]
-  opportunityDetails OpportunityDetails?
-  emdRequirement    TenderFeeEmdRequirement?
-  outcomeRecord     OutcomeRecord?
-  checklistItems    TenderUpdateChecklist[]
-  outputRecord      TenderOutput?
-  awardFormalities  AwardFormalities?
-  stageApprovals    StageApproval[]
-  queries           TenderQuery[]
-}
-
-model PreliminaryTenderInfo {
-  id            String   @id @default(cuid())
-  tenderId      String   @unique
-  tender        Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  qualificationAssessment Boolean?
-  interestFitScore Float?
-  itemDetails   String?
-  deliveryLocation String?
-  deliveryPeriod String?
-  paymentTermsExtracted String?
-  statutoryNotes String?
-  evaluatorNotes String?
-  shortlistRecommendation Boolean?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-}
-
-model EvaluationRecord {
-  id            String   @id @default(cuid())
-  tenderId      String
-  tender        Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  matrixId      String
-  matrix        DecisionMatrix @relation(fields: [matrixId], references: [id])
-  totalScore    Float?
-  overrideNotes String?
-  evaluatorId   String
-  evaluator     User     @relation(fields: [evaluatorId], references: [id])
-  decisionAt    DateTime?
-  createdAt     DateTime @default(now())
-
-  scores EvaluationScore[]
-}
-
-model EvaluationScore {
-  id           String   @id @default(cuid())
-  evaluationId String
-  evaluation   EvaluationRecord @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
-  criterionId  String
-  criterion    DecisionMatrixCriterion @relation(fields: [criterionId], references: [id])
-  score        Float
-}
-
-model OpportunityDetails {
-  id            String   @id @default(cuid())
-  tenderId      String   @unique
-  tender        Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  requirementsBreakdown String?
-  bomJson       String?  // JSON string: line items for hardware BOM
-  pricingSummaryJson String?
-  preparationPercent Int  @default(0)
-  preparedById  String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  approvalRecord ApprovalRecord?
-  bidSubmission  BidSubmission?
-}
-
-model ApprovalRecord {
-  id                String   @id @default(cuid())
-  opportunityId     String   @unique
-  opportunity       OpportunityDetails @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
-
-  financeApproved   Boolean?
-  financeApproverId String?
-  financeAt         DateTime?
-  financeComments   String?
-
-  salesMgrApproved  Boolean?
-  salesMgrApproverId String?
-  salesMgrAt        DateTime?
-  salesMgrComments  String?
-
-  ceoApproved       Boolean?
-  ceoApproverId     String?
-  ceoAt             DateTime?
-  ceoComments       String?
-
-  overallStatus     TenderStatus @default(PENDING)
-  updatedAt         DateTime @updatedAt
-}
-
-model BidSubmission {
-  id             String   @id @default(cuid())
-  opportunityId  String   @unique
-  opportunity    OpportunityDetails @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
-  submittedAt    DateTime?
-  submittedTo    String?
-  submissionProofKey String?
-  createdAt      DateTime @default(now())
+  outcomeRecord OutcomeRecord?
+  tasks         TenderTask[]
+  comments      Comment[]
+  documents     Document[]
 }
 
 model OutcomeRecord {
-  id              String   @id @default(cuid())
-  tenderId        String   @unique
-  tender          Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  outcome         Outcome
-  submittedAt     DateTime? // bid submission date — captured on the Update Tender page's Submission tab
-  orderId         String?
-  contractValue   Float?
-  contractSignedDate DateTime?
-  lostReason      LostReason?
-  lostTo          String?
-  bidAmount       Float?
-  winningBidAmount Float?
-  remarks         String?
-  recordedById    String?
-  recordedAt      DateTime @default(now())
-
-  // New fields added
-  emdAmount       Float?
-  emdDetails      String?
-  outcomeDate     DateTime?
-  decisionDate    DateTime?
+  id               String    @id @default(cuid())
+  tenderId         String    @unique
+  tender           Tender    @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  outcome          Outcome
+  decisionDate     DateTime?
+  winningBidAmount Float? // "Winning Bid Value"
+  winner           String?
+  reasonForLoss    String?
+  recordedById     String?
+  recordedAt       DateTime  @default(now())
 }
 
-// Post-WON formalities tracker (contract/PO/BG) — spec §Award & Contracting.
-// Files (contract/PO/BG) are stored via the generic Document model
-// (entityType="Tender", category="CONTRACT"|"PO"|"BG"), not here.
-model AwardFormalities {
-  id                  String    @id @default(cuid())
-  tenderId            String    @unique
-  tender              Tender    @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-
-  contractSigned      Boolean   @default(false)
-  contractSignedDate  DateTime?
-
-  poReceived          Boolean   @default(false)
-  poNumber            String?
-  poDate              DateTime?
-  poValue             Float?
-
-  bgRequired          Boolean   @default(false)
-  bgIssued            Boolean   @default(false)
-  bgAmount            Float?
-  bgBankName          String?
-  bgValidityDate      DateTime?
-
-  formalitiesComplete Boolean   @default(false)
-
-  updatedById         String?
-  updatedBy           User?     @relation(fields: [updatedById], references: [id])
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+// Reusable master list ("Title" + "Required?" only) that Admin maintains —
+// importing a template onto a tender bulk-creates one TenderTask per row,
+// pre-assigned to that tender's Bidder (reassignable afterwards).
+model TaskTemplate {
+  id         String   @id @default(cuid())
+  title      String
+  isRequired Boolean  @default(true)
+  createdAt  DateTime @default(now())
 }
 
-model TenderFeeEmdRequirement {
-  id              String   @id @default(cuid())
-  tenderId        String   @unique
-  tender          Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  tenderFeeRequired Boolean @default(false)
-  tenderFeeAmount Float?
-  tenderFeePaid   Boolean  @default(false)
-  emdRequired     Boolean  @default(false)
-  emdAmount       Float?
-  emdPaymentMode  String?
-  paymentDeadline DateTime?
-  refundConditions String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  emdPayment EmdPayment?
+// Flat per-tender task list — replaces the old checklist + approval system.
+// No phase scoping; a single list per tender. Only the assigned user (or an
+// Admin) may mark their own task complete.
+model TenderTask {
+  id             String     @id @default(cuid())
+  tenderId       String
+  tender         Tender     @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  title          String
+  assignedUserId String?
+  assignedUser   User?      @relation("TaskAssignedUser", fields: [assignedUserId], references: [id])
+  isRequired     Boolean    @default(true)
+  status         TaskStatus @default(PENDING)
+  completedById  String?
+  completedBy    User?      @relation("TaskCompletedBy", fields: [completedById], references: [id])
+  completedDate  DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  comments       Comment[]
 }
 
-model EmdPayment {
-  id               String   @id @default(cuid())
-  requirementId    String   @unique
-  requirement      TenderFeeEmdRequirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-  amountRequired   Float
-  amountPaid       Float?
-  paymentDate      DateTime?
-  paymentMode      String?
-  paymentReference String?
-  proofStorageKey  String?
-  paidById         String?
-  paidBy           User?    @relation("EmdPaymentEnteredBy", fields: [paidById], references: [id])
-  status           EmdPaymentStatus @default(PENDING)
-  failureReason    String?
-  notes            String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-
-  refund EmdRefund?
+// Append-only comment log per tender, visible across every stage — replaces
+// the old scattered single-purpose "remarks" fields.
+model Comment {
+  id        String       @id @default(cuid())
+  tenderId  String
+  tender    Tender       @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?        @relation(fields: [userId], references: [id])
+  message   String
+  stage     TenderStage
+  status    TenderStatus
+  // Set when this comment was auto-generated by completing a task — lets the
+  // UI badge it as a "Task Comment" and show which task it belongs to.
+  taskId    String?
+  task      TenderTask?  @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  createdAt DateTime     @default(now())
 }
 
-model EmdRefund {
-  id                  String   @id @default(cuid())
-  emdPaymentId        String   @unique
-  emdPayment          EmdPayment @relation(fields: [emdPaymentId], references: [id], onDelete: Cascade)
-  status              EmdRefundStatus @default(INITIATED)
-  refundAmount        Float?
-  refundReason        EmdRefundReason?
-  initiatedById       String?
-  initiatedBy         User?    @relation("EmdRefundInitiatedBy", fields: [initiatedById], references: [id])
-  initiatedAt         DateTime?
-  expectedRefundDate  DateTime?
-  actualRefundDate    DateTime?
-  refundProofStorageKey String?
-  daysToRefund         Int?
-  notes                String?
-  createdAt            DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+// Generic per-tender document, storage delegated to storage adapter (local
+// disk in dev; swaps to SharePoint/Microsoft Graph in production — see
+// storageAdapter.ts). Two tabs only: To Client / From Client.
+model Document {
+  id           String       @id @default(cuid())
+  tenderId     String
+  tender       Tender       @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  side         DocumentSide
+  title        String?
+  fileName     String
+  url          String
+  publicId     String
+  resourceType String?
+  mimeType     String?
+  sizeBytes    Int?
+  uploadedById String?
+  uploadedBy   User?        @relation(fields: [uploadedById], references: [id])
+  uploadedAt   DateTime     @default(now())
 }
 
 model AuditLog {
   id           String   @id @default(cuid())
   userId       String?
   user         User?    @relation(fields: [userId], references: [id])
-  action       String   // CREATE/UPDATE/DELETE
+  action       String // CREATE/UPDATE/DELETE
   resourceType String
   resourceId   String?
-  diff         String?  // JSON string
+  diff         String? // JSON string
   ipAddress    String?
   createdAt    DateTime @default(now())
 }
 
-// Per-tender checklist for the Update page's Evaluation/Preparation/Submission
-// tabs. Static task list defined in CHECKLIST_DEFINITION (evaluation.routes.ts);
-// rows are seeded/garbage-collected on GET, never user-created.
-model TenderUpdateChecklist {
-  id             String   @id @default(cuid())
-  tenderId       String
-  tender         Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  phase          String   // "EVALUATION" | "PREPARATION" | "SUBMISSION"
-  label          String
-  order          Int
-  checked        Boolean  @default(false)
-  remarks        String?  // reused as free-text remarks for the Go/No-Go decision row
-  decision       String?  // "GO" | "NO_GO" — only set on the static Go/No-Go Decision row
-  updatedById    String?  // who last flipped `checked` — see evaluation.routes.ts PUT handler
-  updatedBy      User?    @relation(fields: [updatedById], references: [id])
-  assignedRoleId String?  // per-tender responsible team/role for this task (spec: "assign role for each checklist")
-  assignedRole   Role?    @relation(fields: [assignedRoleId], references: [id])
-  // Soft-delete: a user-removed item must stay gone even though it may still
-  // match a MasterChecklistItem template — ensureDefaultChecklist checks this
-  // flag (not just presence of the row) before re-seeding, so removing an item
-  // doesn't get silently undone by the very next GET.
-  removed        Boolean  @default(false)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+// ============ CUSTOMERS ============
+
+model Customer {
+  id                 String   @id @default(cuid())
+  name               String
+  city               String
+  state              String
+  country            String   @default("India")
+  address            String?
+  email              String?
+  phone              String?
+  contactName        String?
+  contactDesignation String?
+  contactEmail       String?
+  contactPhone       String?
+
+  relatedToId        String?
+  relatedTo          Customer?  @relation("CustomerHierarchy", fields: [relatedToId], references: [id], onDelete: SetNull)
+  branches           Customer[] @relation("CustomerHierarchy")
+
+  tenders            Tender[]
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 }
-
-// Per-tender, per-checklist-phase approval sign-off list (shown as the
-// "Approvals" card on the Update Tender page, below the checklist). Which
-// roles appear is admin-configurable per tender; only a user holding that
-// role (or ADMIN) can approve their own row — see stageApprovals.routes.ts.
-model StageApproval {
-  id           String    @id @default(cuid())
-  tenderId     String
-  tender       Tender    @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  phase        String    // "EVALUATION" | "PREPARATION"
-  title        String    @default("") // what's being approved, e.g. "Technical Clearance"
-  roleId       String
-  role         Role      @relation(fields: [roleId], references: [id])
-  required     Boolean   @default(true)
-  approved     Boolean   @default(false)
-  approvedAt   DateTime?
-  approvedById String?
-  approvedBy   User?     @relation(fields: [approvedById], references: [id])
-  // Soft-delete: same reasoning as TenderUpdateChecklist.removed — a
-  // user-removed approval must stay gone even if it matches a
-  // MasterApprovalItem template.
-  removed      Boolean   @default(false)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-
-  // A role can hold multiple distinct approvals per phase (e.g. Sales Manager
-  // may be asked for both "Technical Clearance" and "Budget Sign-off").
-  @@index([tenderId, phase, roleId])
-}
-
-enum QueryVisibility {
-  PUBLIC  // anyone who can open this tender's Update page can see & reply
-  PRIVATE // only the creator + the targeted role (+ BIDDER) can see & reply
-}
-
-enum QueryStatus {
-  OPEN
-  RESOLVED // flips automatically the moment the first reply is posted
-}
-
-// The "ask a query" thread shown alongside the Update Tender page's per-phase
-// activity feed — separate from StageApproval (a formal sign-off) and from
-// TenderUpdateChecklist (a checklist row's own remarks).
-model TenderQuery {
-  id           String          @id @default(cuid())
-  tenderId     String
-  tender       Tender          @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  phase        String          // "EVALUATION" | "PREPARATION" — which tab this belongs to
-  message      String
-  visibility   QueryVisibility @default(PUBLIC)
-  targetRoleId String?
-  targetRole   Role?           @relation(fields: [targetRoleId], references: [id])
-  status       QueryStatus     @default(OPEN)
-  createdById  String?
-  createdBy    User?           @relation("TenderQueryCreatedBy", fields: [createdById], references: [id])
-  createdAt    DateTime        @default(now())
-
-  replies TenderQueryReply[]
-
-  @@index([tenderId, phase])
-}
-
-model TenderQueryReply {
-  id          String      @id @default(cuid())
-  queryId     String
-  query       TenderQuery @relation(fields: [queryId], references: [id], onDelete: Cascade)
-  message     String
-  createdById String?
-  createdBy   User?       @relation("TenderQueryReplyCreatedBy", fields: [createdById], references: [id])
-  createdAt   DateTime    @default(now())
-}
-
-model TenderOutput {
-  id              String    @id @default(cuid())
-  tenderId        String    @unique
-  tender          Tender    @relation(fields: [tenderId], references: [id], onDelete: Cascade)
-  submitDate      DateTime?
-  submitValue     Float?
-  outcome         String?   // "WIN" | "LOST" | "OTHER"
-  outcomeRemarks  String?
-  winningBidValue Float?
-  winner          String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-}
-
-model MasterChecklistItem {
-  id        String   @id @default(cuid())
-  phase     String   // "EVALUATION" | "PREPARATION"
-  label     String
-  order     Int
-  isDefault Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
-model MasterApprovalItem {
-  id        String   @id @default(cuid())
-  phase     String   // "EVALUATION" | "PREPARATION"
-  title     String
-  roleId    String
-  role      Role     @relation(fields: [roleId], references: [id])
-  required  Boolean  @default(true)
-  isDefault Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-

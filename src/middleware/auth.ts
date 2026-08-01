@@ -2,7 +2,7 @@ import { NextFunction, Request, Response } from "express";
 import { verifyToken } from "../utils/jwt";
 
 export interface AuthedRequest extends Request {
-  user?: { userId: string; role: string };
+  user?: { userId: string; isAdmin: boolean };
 }
 
 export function authenticate(req: AuthedRequest, res: Response, next: NextFunction) {
@@ -12,7 +12,7 @@ export function authenticate(req: AuthedRequest, res: Response, next: NextFuncti
   }
   try {
     const payload = verifyToken(header.slice("Bearer ".length));
-    req.user = { userId: payload.userId, role: payload.role };
+    req.user = { userId: payload.userId, isAdmin: payload.isAdmin };
     next();
   } catch {
     return res.status(401).json({ error: "Invalid or expired token" });

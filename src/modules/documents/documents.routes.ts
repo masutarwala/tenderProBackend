@@ -1,68 +1,84 @@
 import { Router } from "express";
-import multer from "multer";
+import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { asyncHandler, HttpError } from "../../middleware/errorHandler";
 import { authenticate, AuthedRequest } from "../../middleware/auth";
-import { storageAdapter } from "../../storage/localDiskStorage";
-import { isPhaseLocked } from "../../utils/phaseLock";
+import { fileService } from "../../services/fileService";
 
 const router = Router();
 router.use(authenticate);
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
-// Tender-phase documents are tagged category="<phase>:<role>" (see TenderUpdatePage's
-// DocumentsCard). Once that phase is actually completed, its documents become a
-// closed record — mirrors the frontend's phaseLocked logic and the same rule
-// already enforced for StageApproval.
-async function assertTenderPhaseUnlocked(entityType: string, entityId: string, category?: string | null) {
-  if (entityType !== "Tender" || !category) return;
-  const phase = category.split(":")[0];
-  if (phase !== "EVALUATION" && phase !== "PREPARATION") return;
-  const tender = await prisma.tender.findUnique({ where: { id: entityId }, select: { stage: true } });
-  if (!tender) return;
-  if (isPhaseLocked(tender.stage, phase)) throw new HttpError(400, "This stage is complete — documents are locked.");
-}
+const createSchema = z.object({
+  tenderId: z.string().min(1),
+  side: z.enum(["TO_CLIENT", "FROM_CLIENT"]),
+  title: z.string().optional(),
+  documentPath: z.string().min(1),
+});
 
-// entityType/entityId let any module (Tender, OpportunityDetails, EmdPayment, EmdRefund, PqiStatement)
-// attach documents without a bespoke upload endpoint of its own.
+// Per-tender documents, two tabs only: To Client / From Client. Nothing is
+// locked/gated anymore — Stage/Status changes are manual, not workflow-gated.
 router.get(
   "/",
   asyncHandler(async (req, res) => {
-    const { entityType, entityId } = req.query as { entityType?: string; entityId?: string };
-    if (!entityType || !entityId) throw new HttpError(400, "entityType and entityId are required");
+    const { tenderId } = req.query as { tenderId?: string };
+    if (!tenderId) throw new HttpError(400, "tenderId is required");
     res.json(
       await prisma.document.findMany({
-        where: { entityType, entityId },
-        include: { uploadedBy: { select: { fullName: true, role: { select: { name: true } } } } },
+        where: { tenderId },
+        include: { uploadedBy: { select: { fullName: true } } },
         orderBy: { uploadedAt: "desc" },
       })
     );
   })
 );
 
+// Finalizes a file previously staged via POST /api/files/upload-temp: moves
+// it to Cloudinary, records the URL, then clears the temp copy. The file
+// itself never lands on Cloudinary until this step, so an abandoned form
+// (user picks a file, never saves) leaves nothing but a temp-dir file that
+// the next server restart sweeps up.
 router.post(
   "/",
-  upload.single("file"),
   asyncHandler(async (req: AuthedRequest, res) => {
-    const { entityType, entityId, category, title } = req.body as { entityType?: string; entityId?: string; category?: string; title?: string };
-    if (!entityType || !entityId) throw new HttpError(400, "entityType and entityId are required");
-    if (!req.file) throw new HttpError(400, "file is required");
-    await assertTenderPhaseUnlocked(entityType, entityId, category);
+    const { tenderId, side, title, documentPath } = createSchema.parse(req.body);
 
-    const stored = await storageAdapter.upload(`${entityType}/${entityId}`, req.file.originalname, req.file.buffer, req.file.mimetype);
-    const doc = await prisma.document.create({
-      data: {
-        entityType,
-        entityId,
-        category,
-        title: title?.trim() || null,
-        fileName: stored.fileName,
-        storageKey: stored.storageKey,
-        mimeType: stored.mimeType,
-        sizeBytes: stored.sizeBytes,
-        uploadedById: req.user!.userId,
-      },
-    });
+    if (!(await fileService.fileExists(documentPath))) {
+      throw new HttpError(400, "Uploaded file was not found on the server. Please re-upload and try again.");
+    }
+    const meta = await fileService.readTempMeta(documentPath);
+
+    const folder = `client-documents/${side === "TO_CLIENT" ? "to-client" : "from-client"}`;
+    let uploaded;
+    try {
+      uploaded = await fileService.uploadToCloudinary(documentPath, folder);
+    } catch (err) {
+      console.error("Cloudinary upload failed", err);
+      throw new HttpError(502, "Failed to upload document to cloud storage. Please try again.");
+    }
+
+    let doc;
+    try {
+      doc = await prisma.document.create({
+        data: {
+          tenderId,
+          side,
+          title: title?.trim() || null,
+          fileName: meta.originalName,
+          url: uploaded.secureUrl,
+          publicId: uploaded.publicId,
+          resourceType: uploaded.resourceType,
+          mimeType: meta.mimeType,
+          sizeBytes: meta.sizeBytes,
+          uploadedById: req.user!.userId,
+        },
+      });
+    } catch (err) {
+      await fileService.deleteCloudinaryFile(uploaded.publicId, uploaded.resourceType).catch(() => {});
+      throw err;
+    }
+
+    await fileService.deleteLocalFile(documentPath).catch((err) => console.error("Failed to clean up temp file", err));
+
     res.status(201).json(doc);
   })
 );
@@ -72,10 +88,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const doc = await prisma.document.findUnique({ where: { id: req.params.id } });
     if (!doc) throw new HttpError(404, "Document not found");
-    const buffer = await storageAdapter.download(doc.storageKey);
-    res.setHeader("Content-Disposition", `attachment; filename="${doc.fileName}"`);
-    if (doc.mimeType) res.setHeader("Content-Type", doc.mimeType);
-    res.send(buffer);
+    res.redirect(doc.url);
   })
 );
 
@@ -84,8 +97,7 @@ router.delete(
   asyncHandler(async (req, res) => {
     const doc = await prisma.document.findUnique({ where: { id: req.params.id } });
     if (!doc) throw new HttpError(404, "Document not found");
-    await assertTenderPhaseUnlocked(doc.entityType, doc.entityId, doc.category);
-    await storageAdapter.delete(doc.storageKey);
+    await fileService.deleteCloudinaryFile(doc.publicId, doc.resourceType ?? undefined).catch((err) => console.error("Failed to delete Cloudinary file", err));
     await prisma.document.delete({ where: { id: doc.id } });
     res.status(204).send();
   })

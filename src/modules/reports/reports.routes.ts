@@ -15,37 +15,6 @@ router.get(
 );
 
 router.get(
-  "/emd-summary",
-  asyncHandler(async (_req, res) => {
-    const [held, paid, refunded, overdueRefunds] = await Promise.all([
-      prisma.emdPayment.aggregate({ where: { status: "PAID", refund: null }, _sum: { amountPaid: true }, _count: true }),
-      prisma.emdPayment.aggregate({ where: { status: "PAID" }, _sum: { amountPaid: true }, _count: true }),
-      prisma.emdRefund.aggregate({ where: { status: "RECEIVED" }, _sum: { refundAmount: true }, _count: true }),
-      prisma.emdRefund.findMany({
-        where: { status: "IN_PROGRESS", expectedRefundDate: { lt: new Date() } },
-        include: { emdPayment: { include: { requirement: { include: { tender: true } } } } },
-      }),
-    ]);
-
-    const refundsReceived = await prisma.emdRefund.findMany({ where: { status: "RECEIVED", daysToRefund: { not: null } } });
-    const avgDaysToRefund =
-      refundsReceived.length > 0
-        ? refundsReceived.reduce((sum, r) => sum + (r.daysToRefund ?? 0), 0) / refundsReceived.length
-        : null;
-
-    res.json({
-      totalEmdHeld: held._sum.amountPaid ?? 0,
-      totalEmdPaid: paid._sum.amountPaid ?? 0,
-      totalEmdRefunded: refunded._sum.refundAmount ?? 0,
-      paidCount: paid._count,
-      refundedCount: refunded._count,
-      averageDaysToRefund: avgDaysToRefund,
-      overdueRefunds,
-    });
-  })
-);
-
-router.get(
   "/win-loss",
   asyncHandler(async (_req, res) => {
     const grouped = await prisma.outcomeRecord.groupBy({ by: ["outcome"], _count: { _all: true } });
@@ -59,123 +28,59 @@ router.get(
   "/dashboard",
   asyncHandler(async (_req, res) => {
     const tenders = await prisma.tender.findMany({
-      include: {
-        customer: true,
-        outcomeRecord: true,
-        emdRequirement: { include: { emdPayment: true } },
-        opportunityDetails: { include: { approvalRecord: true } },
-      },
+      include: { outcomeRecord: true },
     });
 
     const now = new Date();
     const daysUntil = (d: Date | null) => (d ? Math.ceil((d.getTime() - now.getTime()) / 86400000) : null);
 
+    // "Bid Value" if set, else fall back to "Bid Worth" (tenderValue) — matches
+    // the same fallback used on the tender detail page's Financial section.
+    const bidAmount = (t: (typeof tenders)[number]) => (t.bidValue && t.bidValue > 0 ? t.bidValue : t.tenderValue ?? 0);
+
     const isActive = (t: (typeof tenders)[number]) => t.status !== "COMPLETED";
-    const emdPending = (t: (typeof tenders)[number]) =>
-      t.emdRequirement?.emdRequired && t.emdRequirement.emdPayment?.status !== "PAID";
-    const notApproved = (t: (typeof tenders)[number]) =>
-      t.opportunityDetails?.approvalRecord?.overallStatus !== "COMPLETED";
-    const isAtRisk = (t: (typeof tenders)[number]) => emdPending(t) || notApproved(t);
 
     // KPIs
     const activeTenders = tenders.filter(isActive);
-    const pipelineValue = activeTenders.reduce((s, t) => s + (t.tenderValue ?? 0), 0);
-    const STAGE_WEIGHT: Record<string, number> = { EVALUATION: 0.2, PREPARATION: 0.5, SUBMISSION: 0.8 };
-    const weightedPipelineValue = activeTenders.reduce(
-      (s, t) => s + (t.tenderValue ?? 0) * (STAGE_WEIGHT[t.stage] ?? 0.2),
-      0
-    );
+    const pipelineValue = activeTenders.reduce((s, t) => s + bidAmount(t), 0);
     const won = tenders.filter((t) => t.outcomeRecord?.outcome === "WON");
     const lost = tenders.filter((t) => t.outcomeRecord?.outcome === "LOST");
+    const dropped = tenders.filter((t) => t.outcomeRecord?.outcome === "DROPPED");
     const winRate = won.length + lost.length > 0 ? (won.length / (won.length + lost.length)) * 100 : null;
-    const wonValue = won.reduce((s, t) => s + (t.outcomeRecord?.contractValue ?? t.tenderValue ?? 0), 0);
+    const wonValue = won.reduce((s, t) => s + (t.outcomeRecord?.winningBidAmount ?? bidAmount(t)), 0);
     const closingSoon = activeTenders.filter((t) => {
       const d = daysUntil(t.closingDate);
       return d !== null && d >= 0 && d <= CLOSING_SOON_DAYS;
     });
-    const atRiskCount = closingSoon.filter(isAtRisk).length;
 
     // Funnel — every tender starts at Evaluation, so each later stage is a
     // subset of tenders that reached at least that far in the pipeline.
-    const inEvaluation = tenders;
-    const inPreparation = tenders.filter((t) => t.stage !== "EVALUATION");
-    const inSubmission = tenders.filter((t) => t.stage === "SUBMISSION");
     const funnelStage = (label: string, list: typeof tenders) => ({
       label,
       count: list.length,
-      value: list.reduce((s, t) => s + (t.tenderValue ?? 0), 0),
+      value: list.reduce((s, t) => s + bidAmount(t), 0),
     });
     const funnel = [
-      funnelStage("Evaluation", inEvaluation),
-      funnelStage("Preparation", inPreparation),
-      funnelStage("Submission", inSubmission),
+      funnelStage("Evaluation", tenders),
+      funnelStage("Preparation", tenders.filter((t) => t.stage !== "EVALUATION")),
+      funnelStage("Submission", tenders.filter((t) => t.stage === "SUBMISSION")),
       funnelStage("Won", won),
     ];
-
-    // Buyer type — grouped case-insensitively so "gov" and "Government" (free-
-    // text field, entered inconsistently) don't fragment into separate slices.
-    const buyerMap = new Map<string, { label: string; count: number; value: number }>();
-    for (const t of tenders) {
-      const raw = t.customer?.organizationType?.trim() || "Unspecified";
-      const key = raw.toLowerCase();
-      const entry = buyerMap.get(key) ?? { label: raw, count: 0, value: 0 };
-      entry.count += 1;
-      entry.value += t.tenderValue ?? 0;
-      buyerMap.set(key, entry);
-    }
-    const buyerTotal = tenders.reduce((s, t) => s + (t.tenderValue ?? 0), 0);
-    const buyerType = Array.from(buyerMap.values())
-      .map((v) => ({ label: v.label, count: v.count, value: v.value, pct: buyerTotal > 0 ? (v.value / buyerTotal) * 100 : 0 }))
-      .sort((a, b) => b.value - a.value);
-
-    // Domain (Customer.industry array, fallback to tender.subIndustry)
-    const domainMap = new Map<string, { activeBids: number; won: number; lost: number }>();
-    for (const t of tenders) {
-      const labels = t.customer?.industry?.length ? t.customer.industry : t.subIndustry ? [t.subIndustry] : ["Unspecified"];
-      for (const label of labels) {
-        const entry = domainMap.get(label) ?? { activeBids: 0, won: 0, lost: 0 };
-        if (isActive(t)) entry.activeBids += 1;
-        if (t.outcomeRecord?.outcome === "WON") entry.won += 1;
-        if (t.outcomeRecord?.outcome === "LOST") entry.lost += 1;
-        domainMap.set(label, entry);
-      }
-    }
-    const domain = Array.from(domainMap.entries())
-      .map(([label, v]) => ({
-        label,
-        activeBids: v.activeBids,
-        winRate: v.won + v.lost > 0 ? (v.won / (v.won + v.lost)) * 100 : null,
-      }))
-      .filter((d) => d.activeBids > 0)
-      .sort((a, b) => b.activeBids - a.activeBids);
-
-    // States
-    const stateMap = new Map<string, number>();
-    for (const t of tenders) {
-      const label = t.state?.trim() || "Unspecified";
-      stateMap.set(label, (stateMap.get(label) ?? 0) + (t.tenderValue ?? 0));
-    }
-    const states = Array.from(stateMap.entries())
-      .map(([label, value]) => ({ label, value }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 8);
 
     // Alerts: closing soon, not yet closed
     const alerts = closingSoon
       .map((t) => {
         const d = daysUntil(t.closingDate)!;
-        const atRisk = isAtRisk(t);
-        const risk: "danger" | "warning" | "ok" = d <= 3 || atRisk ? (d <= 3 ? "danger" : "warning") : "ok";
-        const reason = emdPending(t) ? "EMD pending" : notApproved(t) ? "Approval pending" : `${d} day(s) left`;
+        const risk: "danger" | "warning" | "ok" = d <= 3 ? "danger" : "warning";
         return {
           id: t.id,
           tenderId: `TENDER${String(t.tenderSeq).padStart(3, "0")}`,
           title: t.title,
-          buyerLabel: t.customer?.organizationType?.trim() || "Unspecified",
-          value: t.tenderValue ?? 0,
+          buyerLabel: t.customerName?.trim() || "Unspecified",
+          value: bidAmount(t),
           daysLeft: d,
           risk,
-          reason,
+          reason: `${d} day(s) left`,
         };
       })
       .sort((a, b) => a.daysLeft - b.daysLeft);
@@ -184,18 +89,14 @@ router.get(
       kpis: {
         activeBids: activeTenders.length,
         pipelineValue,
-        weightedPipelineValue,
         winRate,
         wonCount: won.length,
         lostCount: lost.length,
+        droppedCount: dropped.length,
         wonValue,
         closingSoonCount: closingSoon.length,
-        atRiskCount,
       },
       funnel,
-      buyerType,
-      domain,
-      states,
       alerts,
     });
   })

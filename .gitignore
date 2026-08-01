@@ -51,6 +51,7 @@ Thumbs.db
 # Local environment and database files
 .env
 uploads/
+temp/
 prisma/*.db
 prisma/*.db-journal
 .claude/
