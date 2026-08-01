@@ -28,7 +28,7 @@ router.get(
   "/dashboard",
   asyncHandler(async (_req, res) => {
     const tenders = await prisma.tender.findMany({
-      include: { outcomeRecord: true },
+      include: { outcomeRecord: true, customer: true },
     });
 
     const now = new Date();
@@ -76,7 +76,7 @@ router.get(
           id: t.id,
           tenderId: `TENDER${String(t.tenderSeq).padStart(3, "0")}`,
           title: t.title,
-          buyerLabel: t.customerName?.trim() || "Unspecified",
+          buyerLabel: t.customer?.name?.trim() || "Unspecified",
           value: bidAmount(t),
           daysLeft: d,
           risk,
