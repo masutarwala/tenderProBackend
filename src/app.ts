@@ -14,7 +14,7 @@ import outcomesRoutes from "./modules/outcomes/outcomes.routes";
 import reportsRoutes from "./modules/reports/reports.routes";
 import { customersRouter } from "./modules/customers/customers.routes";
 
-export const app = express();
+const app = express();
 
 app.use(cors({
   origin: "*", // allow all origins (or specify your frontend URL here)
