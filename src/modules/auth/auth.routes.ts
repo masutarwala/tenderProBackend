@@ -13,12 +13,13 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
-function serializeUser(user: { id: string; email: string; fullName: string; isAdmin: boolean; menuKeys: string[] }) {
+function serializeUser(user: { id: string; email: string; fullName: string; isAdmin: boolean; canAddTender: boolean; menuKeys: string[] }) {
   return {
     id: user.id,
     email: user.email,
     fullName: user.fullName,
     isAdmin: user.isAdmin,
+    canAddTender: user.canAddTender,
     menuKeys: user.menuKeys,
   };
 }

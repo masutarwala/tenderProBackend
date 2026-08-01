@@ -18,6 +18,7 @@ const createSchema = z.object({
   password: z.string().min(8),
   fullName: z.string().min(1),
   isAdmin: z.boolean().default(false),
+  canAddTender: z.boolean().default(false),
   menuKeys: z.array(z.enum(MENU_KEYS)).default([]),
 });
 
@@ -36,6 +37,7 @@ router.get(
         email: true,
         fullName: true,
         isAdmin: true,
+        canAddTender: true,
         menuKeys: true,
         active: true,
         createdAt: true,

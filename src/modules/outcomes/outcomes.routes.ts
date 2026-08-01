@@ -14,7 +14,7 @@ router.use(authenticate);
 // reason, matching what the frontend's No Go prompt already collects.
 const schema = z
   .object({
-    outcome: z.enum(["WON", "LOST", "DROPPED"]),
+    outcome: z.enum(["WON", "LOST", "DROPPED", "NO_GO", "DROPPED_BY_US", "WITHDRAWN_BY_CLIENT"]),
     decisionDate: z.coerce.date().optional(),
     winningBidAmount: z.number().optional(),
     winner: z.string().optional(),

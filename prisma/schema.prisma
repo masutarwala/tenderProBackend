@@ -64,6 +64,7 @@ model User {
   passwordHash String
   fullName     String
   isAdmin      Boolean  @default(false)
+  canAddTender Boolean  @default(false)
   // Which of the 4 left-nav menus this user can see: "dashboard" | "my-bids" |
   // "users" | "task-list". Admins see all 4 regardless of this list.
   menuKeys     String[] @default([])
