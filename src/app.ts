@@ -16,7 +16,11 @@ import { customersRouter } from "./modules/customers/customers.routes";
 
 export const app = express();
 
-app.use(cors());
+app.use(cors({
+  origin: "*", // allow all origins (or specify your frontend URL here)
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
 app.use(express.json());
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
