@@ -1,4 +1,6 @@
 import "dotenv/config";
+import os from "os";
+import path from "path";
 
 function required(name: string, fallback?: string): string {
   const value = process.env[name] ?? fallback;
@@ -14,7 +16,7 @@ export const env = {
   jwtSecret: required("JWT_SECRET"),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? "8h",
   corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
-  tempUploadDir: process.env.TEMP_UPLOAD_DIR ?? "./temp/uploads",
+  tempUploadDir: process.env.TEMP_UPLOAD_DIR ?? path.join(os.tmpdir(), "uploads"),
   cloudinaryUrl: required("CLOUDINARY_URL"),
   cloudinaryApiKey: required("CLOUDINARY_API_KEY"),
   cloudinaryApiSecret: required("CLOUDINARY_API_SECRET"),
