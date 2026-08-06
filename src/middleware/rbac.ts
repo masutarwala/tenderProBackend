@@ -26,3 +26,11 @@ export function canManageTender(
 ): boolean {
   return user.isAdmin || tender.bidderId === user.userId || tender.salesExecId === user.userId;
 }
+
+// Only Admin or the assigned Bidder can update the Stage/Status or Outcome.
+export function canUpdateTenderStatus(
+  user: { userId: string; isAdmin: boolean },
+  tender: { bidderId: string | null }
+): boolean {
+  return user.isAdmin || tender.bidderId === user.userId;
+}

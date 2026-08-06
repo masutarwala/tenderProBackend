@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { asyncHandler, HttpError } from "../../middleware/errorHandler";
 import { authenticate, AuthedRequest } from "../../middleware/auth";
-import { canManageTender } from "../../middleware/rbac";
+import { canManageTender, canUpdateTenderStatus } from "../../middleware/rbac";
 import { recordAudit } from "../../middleware/audit";
 
 const router = Router();
@@ -40,11 +40,8 @@ router.post(
     const { comment, ...data } = schema.parse(req.body);
     const tender = await prisma.tender.findUnique({ where: { id: req.params.tenderId }, include: { outcomeRecord: true } });
     if (!tender) throw new HttpError(404, "Tender not found");
-    if (!canManageTender(req.user!, tender)) {
-      throw new HttpError(403, "Only Admin or the assigned Bidder/Sales Executive can record the outcome");
-    }
-    if (tender.outcomeRecord) {
-      throw new HttpError(400, "This tender's outcome has already been recorded");
+    if (!canUpdateTenderStatus(req.user!, tender)) {
+      throw new HttpError(403, "Only Admin or the assigned Bidder can record the outcome");
     }
     if ((data.outcome === "WON" || data.outcome === "LOST") && tender.stage !== "SUBMISSION") {
       throw new HttpError(400, "Win/Lost can only be recorded once the tender has reached Submission");

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { asyncHandler, HttpError } from "../../middleware/errorHandler";
 import { authenticate, AuthedRequest } from "../../middleware/auth";
-import { canManageTender } from "../../middleware/rbac";
+import { canManageTender, canUpdateTenderStatus } from "../../middleware/rbac";
 import { recordAudit } from "../../middleware/audit";
 
 const router = Router();
@@ -43,7 +43,7 @@ const createSchema = z.object({
   paymentTerms: z.string().nullable().optional(),
   contractPeriod: z.string().nullable().optional(),
 
-  customerId: z.string().nullable().optional().transform(v => v === "" ? null : v),
+  customerId: z.string().min(1, "Customer is required"),
   decisionDate: z.coerce.date().nullable().optional(),
 
   // Tender Assignment Workflow — every tender must have exactly one Bidder
@@ -114,6 +114,7 @@ router.post(
   "/",
   asyncHandler(async (req: AuthedRequest, res) => {
     const data = createSchema.parse(req.body);
+    if (!data.publishedDate) data.publishedDate = new Date();
     const tender = await prisma.tender.create({ data });
     await recordAudit(req, "CREATE", "Tender", tender.id);
     res.status(201).json(withTenderId(tender));
@@ -154,8 +155,8 @@ router.post(
   asyncHandler(async (req: AuthedRequest, res) => {
     const tender = await prisma.tender.findUnique({ where: { id: req.params.id }, include: { outcomeRecord: true, customer: true } });
     if (!tender) throw new HttpError(404, "Tender not found");
-    if (!canManageTender(req.user!, tender)) {
-      throw new HttpError(403, "Only Admin or the assigned Bidder/Sales Executive can change Stage/Status");
+    if (!canUpdateTenderStatus(req.user!, tender)) {
+      throw new HttpError(403, "Only Admin or the assigned Bidder can change Stage/Status");
     }
     if (tender.outcomeRecord) {
       throw new HttpError(400, "This tender's outcome has already been recorded — Stage can no longer be changed");
