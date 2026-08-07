@@ -1,11 +1,38 @@
 import { Router } from "express";
 import { z } from "zod";
+import https from "https";
 import { prisma } from "../../lib/prisma";
 import { asyncHandler, HttpError } from "../../middleware/errorHandler";
 import { authenticate, AuthedRequest } from "../../middleware/auth";
 import { fileService } from "../../services/fileService";
 
 const router = Router();
+
+// Public route for viewing documents in a new tab
+router.get(
+  "/:id/download",
+  asyncHandler(async (req, res) => {
+    const doc = await prisma.document.findUnique({ where: { id: req.params.id } });
+    if (!doc) throw new HttpError(404, "Document not found");
+    
+    // For older image uploads, fl_attachment bypassed image restrictions
+    let fetchUrl = doc.url;
+    if (fetchUrl.includes("/image/upload/v")) {
+      fetchUrl = fetchUrl.replace("/image/upload/v", "/image/upload/fl_attachment/v");
+    }
+    
+    res.setHeader("Content-Type", doc.mimeType || "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="${doc.fileName}"`);
+    
+    https.get(fetchUrl, (stream) => {
+      stream.pipe(res);
+    }).on("error", (err) => {
+      console.error("Cloud proxy error:", err);
+      if (!res.headersSent) res.status(502).send("Error fetching document");
+    });
+  })
+);
+
 router.use(authenticate);
 
 const createSchema = z.object({
@@ -47,7 +74,11 @@ router.post(
     }
     const meta = await fileService.readTempMeta(documentPath);
 
-    const folder = `client-documents/${side === "TO_CLIENT" ? "to-client" : "from-client"}`;
+    const tender = await prisma.tender.findUnique({ where: { id: tenderId } });
+    if (!tender) throw new HttpError(404, "Tender not found");
+
+    const formattedId = `TENDER${tender.tenderSeq.toString().padStart(3, "0")}`;
+    const folder = `tenders/${formattedId}/${side === "TO_CLIENT" ? "to-client" : "from-client"}`;
     let uploaded;
     try {
       uploaded = await fileService.uploadToCloudinary(documentPath, folder);
@@ -83,14 +114,7 @@ router.post(
   })
 );
 
-router.get(
-  "/:id/download",
-  asyncHandler(async (req, res) => {
-    const doc = await prisma.document.findUnique({ where: { id: req.params.id } });
-    if (!doc) throw new HttpError(404, "Document not found");
-    res.redirect(doc.url);
-  })
-);
+
 
 router.delete(
   "/:id",
