@@ -36,6 +36,7 @@ const createSchema = z.object({
   tenderValue: z.number().nullable().optional(),
   bidValue: z.number().nullable().optional(),
   emdAmount: z.number().nullable().optional(),
+  emdStatus: z.enum(["PENDING", "PAID"]).nullable().optional(),
   awardCriteria: z.enum(AWARD_CRITERIA).nullable().optional(),
   bidValidity: z.string().nullable().optional(),
   securityDeposit: z.string().nullable().optional(),

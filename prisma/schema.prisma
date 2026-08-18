@@ -24,6 +24,11 @@ enum TenderStage {
   SUBMISSION
 }
 
+enum EmdStatus {
+  PENDING
+  PAID
+}
+
 enum TenderStatus {
   PENDING
   COMPLETED
@@ -105,6 +110,7 @@ model Tender {
   tenderValue     Float? // "Bid Worth" — initial estimated value
   bidValue        Float? // "Bid Value" — entered/updated later
   emdAmount       Float?
+  emdStatus       EmdStatus?  @default(PENDING)
   awardCriteria   AwardCriteria?
   bidValidity     String?
   securityDeposit String?
@@ -143,6 +149,8 @@ model OutcomeRecord {
   reasonForLoss    String?
   recordedById     String?
   recordedAt       DateTime  @default(now())
+  isEmdRecovered   Boolean   @default(false)
+  emdRecoveryDate  DateTime?
 }
 
 // Reusable master list ("Title" + "Required?" only) that Admin maintains —
