@@ -34,9 +34,15 @@ router.get(
     const now = new Date();
     const daysUntil = (d: Date | null) => (d ? Math.ceil((d.getTime() - now.getTime()) / 86400000) : null);
 
-    // "Bid Value" if set, else fall back to "Bid Worth" (tenderValue) — matches
-    // the same fallback used on the tender detail page's Financial section.
-    const bidAmount = (t: (typeof tenders)[number]) => (t.bidValue && t.bidValue > 0 ? t.bidValue : t.tenderValue ?? 0);
+    // Value calculation rules:
+    // Evaluation/Preparation -> Bid Worth (tenderValue)
+    // Submission -> Bid Value (bidValue)
+    const bidAmount = (t: (typeof tenders)[number]) => {
+      if (t.stage === "SUBMISSION") {
+        return t.bidValue ?? 0;
+      }
+      return t.tenderValue ?? 0;
+    };
 
     const isActive = (t: (typeof tenders)[number]) => t.status !== "COMPLETED";
 
@@ -55,16 +61,16 @@ router.get(
 
     // Funnel — every tender starts at Evaluation, so each later stage is a
     // subset of tenders that reached at least that far in the pipeline.
-    const funnelStage = (label: string, list: typeof tenders) => ({
+    const funnelStage = (label: string, list: typeof tenders, valueFn: (t: (typeof tenders)[number]) => number) => ({
       label,
       count: list.length,
-      value: list.reduce((s, t) => s + bidAmount(t), 0),
+      value: list.reduce((s, t) => s + valueFn(t), 0),
     });
     const funnel = [
-      funnelStage("Evaluation", tenders),
-      funnelStage("Preparation", tenders.filter((t) => t.stage !== "EVALUATION")),
-      funnelStage("Submission", tenders.filter((t) => t.stage === "SUBMISSION")),
-      funnelStage("Won", won),
+      funnelStage("Evaluation", activeTenders.filter((t) => t.stage === "EVALUATION"), (t) => t.tenderValue ?? 0),
+      funnelStage("Preparation", activeTenders.filter((t) => t.stage === "PREPARATION"), (t) => t.tenderValue ?? 0),
+      funnelStage("Submission", activeTenders.filter((t) => t.stage === "SUBMISSION"), (t) => t.bidValue ?? 0),
+      funnelStage("Won", won, (t) => t.outcomeRecord?.winningBidAmount ?? 0),
     ];
 
     // Alerts: closing soon, not yet closed
@@ -85,6 +91,50 @@ router.get(
       })
       .sort((a, b) => a.daysLeft - b.daysLeft);
 
+    // EMD Recovery Pending/Overdue: Lost/Dropped tenders that have not yet recovered the EMD
+    const overdueItems = tenders
+      .filter(t => t.emdStatus === "PAID" && t.outcomeRecord && t.outcomeRecord.outcome !== "WON" && !t.outcomeRecord.isEmdRecovered)
+      .map(t => {
+        const d = t.outcomeRecord!.emdRecoveryDate ? daysUntil(t.outcomeRecord!.emdRecoveryDate) : null;
+        return {
+          tenderId: `TENDER${String(t.tenderSeq).padStart(3, "0")}`,
+          title: t.title,
+          emdAmount: t.emdAmount ?? 0,
+          // ageDays > 0 means past due. If d is null, or d > 0 (future), ageDays is 0 or negative.
+          // We'll pass it to frontend so frontend can say "Pending" or "Overdue by X days"
+          ageDays: d !== null ? -d : null
+        };
+      });
+
+    const emdOverdueTotal = {
+      count: overdueItems.length,
+      amount: overdueItems.reduce((sum, t) => sum + t.emdAmount, 0)
+    };
+
+    const emdOverdue = overdueItems
+      .sort((a, b) => b.ageDays - a.ageDays)
+      .slice(0, 6);
+
+    // Paid EMD: Active/Won tenders (not lost/dropped) that have EMD paid
+    const paidTendersAll = tenders.filter(t => {
+      const isLostOrDrop = t.outcomeRecord && t.outcomeRecord.outcome !== "WON";
+      return !isLostOrDrop && t.emdStatus === "PAID" && (t.emdAmount ?? 0) > 0;
+    });
+
+    const emdPaidTotal = {
+      count: paidTendersAll.length,
+      amount: paidTendersAll.reduce((sum, t) => sum + (t.emdAmount ?? 0), 0)
+    };
+
+    const emdPaid = paidTendersAll
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, 6)
+      .map(t => ({
+        tenderId: `TENDER${String(t.tenderSeq).padStart(3, "0")}`,
+        title: t.title,
+        emdAmount: t.emdAmount ?? 0
+      }));
+
     res.json({
       kpis: {
         activeBids: activeTenders.length,
@@ -98,6 +148,10 @@ router.get(
       },
       funnel,
       alerts,
+      emdOverdue,
+      emdOverdueTotal,
+      emdPaid,
+      emdPaidTotal,
     });
   })
 );

@@ -19,6 +19,7 @@ const schema = z
     winningBidAmount: z.number().optional(),
     winner: z.string().optional(),
     reasonForLoss: z.string().optional(),
+    emdRecoveryDate: z.coerce.date().optional(),
     comment: z.string().trim().optional(),
   })
   .superRefine((data, ctx) => {
