@@ -93,9 +93,9 @@ router.get(
 
     // EMD Recovery Pending/Overdue: Lost/Dropped tenders that have not yet recovered the EMD
     const overdueItems = tenders
-      .filter(t => t.emdStatus === "PAID" && t.outcomeRecord && t.outcomeRecord.outcome !== "WON" && !t.outcomeRecord.isEmdRecovered)
+      .filter(t => (t as any).emdStatus === "PAID" && t.outcomeRecord && t.outcomeRecord.outcome !== "WON" && !(t.outcomeRecord as any).isEmdRecovered)
       .map(t => {
-        const d = t.outcomeRecord!.emdRecoveryDate ? daysUntil(t.outcomeRecord!.emdRecoveryDate) : null;
+        const d = (t.outcomeRecord as any)!.emdRecoveryDate ? daysUntil((t.outcomeRecord as any)!.emdRecoveryDate) : null;
         return {
           tenderId: `TENDER${String(t.tenderSeq).padStart(3, "0")}`,
           title: t.title,
@@ -112,13 +112,13 @@ router.get(
     };
 
     const emdOverdue = overdueItems
-      .sort((a, b) => b.ageDays - a.ageDays)
+      .sort((a, b) => (b.ageDays ?? 0) - (a.ageDays ?? 0))
       .slice(0, 6);
 
     // Paid EMD: Active/Won tenders (not lost/dropped) that have EMD paid
     const paidTendersAll = tenders.filter(t => {
       const isLostOrDrop = t.outcomeRecord && t.outcomeRecord.outcome !== "WON";
-      return !isLostOrDrop && t.emdStatus === "PAID" && (t.emdAmount ?? 0) > 0;
+      return !isLostOrDrop && (t as any).emdStatus === "PAID" && (t.emdAmount ?? 0) > 0;
     });
 
     const emdPaidTotal = {
