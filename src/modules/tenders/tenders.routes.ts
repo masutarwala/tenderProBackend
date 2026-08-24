@@ -168,6 +168,17 @@ router.post(
       throw new HttpError(400, "Stage cannot move backward");
     }
 
+    if (stage && stage !== tender.stage) {
+      const pendingRequiredInCurrentStage = await prisma.tenderTask.findMany({
+        where: { tenderId: tender.id, isRequired: true, stage: tender.stage, status: "PENDING" },
+        select: { title: true }
+      });
+      if (pendingRequiredInCurrentStage.length > 0) {
+        const titles = pendingRequiredInCurrentStage.map(t => `"${t.title}"`).join(", ");
+        throw new HttpError(400, `Cannot advance to ${stage}. The following required task(s) in ${tender.stage} stage must be completed first: ${titles}`);
+      }
+    }
+
     // "Mark Submitted" gate: every required task must be done, and the
     // Customer/Financial fields the client needs on hand before submission
     // must already be filled in via Save Details.

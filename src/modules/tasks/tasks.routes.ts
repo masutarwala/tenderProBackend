@@ -20,7 +20,7 @@ router.get(
     const tasks = await prisma.tenderTask.findMany({
       where: { tenderId: req.params.tenderId },
       include: taskInclude,
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ order: "asc" }, { createdAt: "asc" }],
     });
     res.json(tasks);
   })
@@ -34,16 +34,21 @@ router.get(
     const tasks = await prisma.tenderTask.findMany({
       where: req.user!.isAdmin ? {} : { assignedUserId: req.user!.userId },
       include: { ...taskInclude, tender: { select: { id: true, tenderRefNo: true, title: true, tenderSeq: true } } },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ order: "asc" }, { createdAt: "desc" }],
     });
     res.json(tasks);
   })
 );
 
+const stageEnum = z.enum(["EVALUATION", "PREPARATION", "SUBMISSION"]);
+
 const createSchema = z.object({
   title: z.string().min(1),
   assignedUserId: z.string().nullable().optional(),
   isRequired: z.boolean().default(true),
+  stage: stageEnum.nullable().optional(),
+  dueDate: z.coerce.date().nullable().optional(),
+  order: z.number().int().optional(),
 });
 
 async function assertTenderManageable(req: AuthedRequest, tenderId: string) {
@@ -61,14 +66,18 @@ router.post(
   "/:tenderId/import",
   asyncHandler(async (req: AuthedRequest, res) => {
     const tender = await assertTenderManageable(req, req.params.tenderId);
-    const templates = await prisma.taskTemplate.findMany({ orderBy: { createdAt: "asc" } });
+    const templates = await prisma.taskTemplate.findMany({ orderBy: [{ order: "asc" }, { createdAt: "asc" }] });
     if (templates.length === 0) throw new HttpError(400, "No task templates have been set up yet");
 
+    const now = new Date();
     await prisma.tenderTask.createMany({
-      data: templates.map((t) => ({
+      data: templates.map((t, idx) => ({
         tenderId: req.params.tenderId,
         title: t.title,
         isRequired: t.isRequired,
+        stage: t.stage,
+        order: t.order ?? idx,
+        dueDate: t.dueDaysOffset ? new Date(now.getTime() + t.dueDaysOffset * 86400000) : null,
         assignedUserId: tender.bidderId,
       })),
     });
@@ -77,9 +86,24 @@ router.post(
     const tasks = await prisma.tenderTask.findMany({
       where: { tenderId: req.params.tenderId },
       include: taskInclude,
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ order: "asc" }, { createdAt: "asc" }],
     });
     res.status(201).json(tasks);
+  })
+);
+
+// Drag-and-drop task reordering endpoint
+router.post(
+  "/:tenderId/reorder",
+  asyncHandler(async (req: AuthedRequest, res) => {
+    await assertTenderManageable(req, req.params.tenderId);
+    const { taskIds } = z.object({ taskIds: z.array(z.string()) }).parse(req.body);
+    await prisma.$transaction(
+      taskIds.map((id, index) =>
+        prisma.tenderTask.update({ where: { id }, data: { order: index } })
+      )
+    );
+    res.status(200).json({ success: true });
   })
 );
 
@@ -101,6 +125,9 @@ const updateSchema = z.object({
   title: z.string().min(1).optional(),
   assignedUserId: z.string().nullable().optional(),
   isRequired: z.boolean().optional(),
+  stage: stageEnum.nullable().optional(),
+  dueDate: z.coerce.date().nullable().optional(),
+  order: z.number().int().optional(),
 });
 
 router.patch(

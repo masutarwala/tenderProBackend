@@ -91,49 +91,61 @@ router.get(
       })
       .sort((a, b) => a.daysLeft - b.daysLeft);
 
-    // EMD Recovery Pending/Overdue: Lost/Dropped tenders that have not yet recovered the EMD
-    const overdueItems = tenders
-      .filter(t => t.emdStatus === "PAID" && t.outcomeRecord && t.outcomeRecord.outcome !== "WON" && !t.outcomeRecord.isEmdRecovered)
+    const daysSince = (d: Date | null) => (d ? Math.max(0, Math.floor((now.getTime() - d.getTime()) / 86400000)) : 0);
+
+    // Helper to check if a bid is closed (status COMPLETED or outcome recorded as LOST/DROPPED)
+    const isBidClosed = (t: (typeof tenders)[number]) => {
+      if (t.status === "COMPLETED") return true;
+      if (t.outcomeRecord && t.outcomeRecord.outcome !== "WON") return true;
+      return false;
+    };
+
+    // 1. All Paid EMD Bids with EMD > 0 (10 bids total - EMD Invested)
+    const allPaidTenders = tenders.filter(t => t.emdStatus === "PAID" && (t.emdAmount ?? 0) > 0);
+    const emdInvestedTotal = {
+      count: allPaidTenders.length,
+      amount: allPaidTenders.reduce((sum, t) => sum + (t.emdAmount ?? 0), 0)
+    };
+
+    // 2. Closed Paid EMD Bids pending recovery (6 bids total - EMD Recover)
+    const dueTendersAll = allPaidTenders.filter(t => !t.outcomeRecord?.isEmdRecovered && isBidClosed(t));
+    const emdRecoverTotal = {
+      count: dueTendersAll.length,
+      amount: dueTendersAll.reduce((sum, t) => sum + (t.emdAmount ?? 0), 0)
+    };
+
+    // 3. Active Paid EMD Bids (4 bids total)
+    const activePaidTenders = allPaidTenders.filter(t => !isBidClosed(t));
+    const emdActiveTotal = {
+      count: activePaidTenders.length,
+      amount: activePaidTenders.reduce((sum, t) => sum + (t.emdAmount ?? 0), 0)
+    };
+
+    // Detail List 1: Pending EMD Recovery (6 tenders) with daysSinceOutcome
+    const emdOverdue = dueTendersAll
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .map(t => {
-        const d = t.outcomeRecord!.emdRecoveryDate ? daysUntil(t.outcomeRecord!.emdRecoveryDate) : null;
+        const outcomeDate = t.outcomeRecord?.recordedAt || t.outcomeRecord?.decisionDate || t.updatedAt;
         return {
           tenderId: `TENDER${String(t.tenderSeq).padStart(3, "0")}`,
           title: t.title,
           emdAmount: t.emdAmount ?? 0,
-          // ageDays > 0 means past due. If d is null, or d > 0 (future), ageDays is 0 or negative.
-          // We'll pass it to frontend so frontend can say "Pending" or "Overdue by X days"
-          ageDays: d !== null ? -d : null
+          daysSinceOutcome: daysSince(outcomeDate)
         };
       });
 
-    const emdOverdueTotal = {
-      count: overdueItems.length,
-      amount: overdueItems.reduce((sum, t) => sum + t.emdAmount, 0)
-    };
-
-    const emdOverdue = overdueItems
-      .sort((a, b) => (b.ageDays ?? 0) - (a.ageDays ?? 0))
-      .slice(0, 6);
-
-    // Paid EMD: Active/Won tenders (not lost/dropped) that have EMD paid
-    const paidTendersAll = tenders.filter(t => {
-      const isLostOrDrop = t.outcomeRecord && t.outcomeRecord.outcome !== "WON";
-      return !isLostOrDrop && t.emdStatus === "PAID" && (t.emdAmount ?? 0) > 0;
-    });
-
-    const emdPaidTotal = {
-      count: paidTendersAll.length,
-      amount: paidTendersAll.reduce((sum, t) => sum + (t.emdAmount ?? 0), 0)
-    };
-
-    const emdPaid = paidTendersAll
+    // Detail List 2: Active Paid EMD (4 tenders) with daysSinceSubmission
+    const emdPaid = activePaidTenders
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, 6)
-      .map(t => ({
-        tenderId: `TENDER${String(t.tenderSeq).padStart(3, "0")}`,
-        title: t.title,
-        emdAmount: t.emdAmount ?? 0
-      }));
+      .map(t => {
+        const subDate = t.publishedDate || t.createdAt;
+        return {
+          tenderId: `TENDER${String(t.tenderSeq).padStart(3, "0")}`,
+          title: t.title,
+          emdAmount: t.emdAmount ?? 0,
+          daysSinceSubmission: daysSince(subDate)
+        };
+      });
 
     res.json({
       kpis: {
@@ -145,13 +157,17 @@ router.get(
         droppedCount: dropped.length,
         wonValue,
         closingSoonCount: closingSoon.length,
+        emdInvestedTotal,
+        emdRecoverTotal,
+        emdDueTotal: emdRecoverTotal,
+        emdPaidTotal: emdInvestedTotal,
       },
       funnel,
       alerts,
       emdOverdue,
-      emdOverdueTotal,
+      emdOverdueTotal: emdRecoverTotal,
       emdPaid,
-      emdPaidTotal,
+      emdPaidTotal: emdActiveTotal,
     });
   })
 );

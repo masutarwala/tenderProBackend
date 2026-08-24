@@ -8,12 +8,14 @@ import { requireAdmin } from "../../middleware/rbac";
 const router = Router();
 router.use(authenticate);
 
+const stageEnum = z.enum(["EVALUATION", "PREPARATION", "SUBMISSION"]);
+
 // Readable by anyone (needed for the "Import Tasks" picker on the tender
 // detail page); only Admin maintains the master list itself.
 router.get(
   "/",
   asyncHandler(async (_req, res) => {
-    const templates = await prisma.taskTemplate.findMany({ orderBy: { createdAt: "asc" } });
+    const templates = await prisma.taskTemplate.findMany({ orderBy: [{ order: "asc" }, { createdAt: "asc" }] });
     res.json(templates);
   })
 );
@@ -21,7 +23,24 @@ router.get(
 const upsertSchema = z.object({
   title: z.string().trim().min(1),
   isRequired: z.boolean().default(true),
+  stage: stageEnum.nullable().optional(),
+  dueDaysOffset: z.number().int().nullable().optional(),
+  order: z.number().int().optional(),
 });
+
+router.post(
+  "/reorder",
+  requireAdmin(),
+  asyncHandler(async (req, res) => {
+    const { templateIds } = z.object({ templateIds: z.array(z.string()) }).parse(req.body);
+    await prisma.$transaction(
+      templateIds.map((id, index) =>
+        prisma.taskTemplate.update({ where: { id }, data: { order: index } })
+      )
+    );
+    res.status(200).json({ success: true });
+  })
+);
 
 router.post(
   "/",
