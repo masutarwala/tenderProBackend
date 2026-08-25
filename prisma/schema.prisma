@@ -161,7 +161,9 @@ model TaskTemplate {
   title         String
   isRequired    Boolean      @default(true)
   stage         TenderStage?
-  dueDaysOffset Int?
+  // Whether importing this template onto a tender requires the bidder to set
+  // a due date on the resulting task (via a date picker, upcoming dates only).
+  dateRequired  Boolean      @default(false)
   order         Int          @default(0)
   createdAt     DateTime     @default(now())
 }
@@ -178,6 +180,10 @@ model TenderTask {
   assignedUser   User?       @relation("TaskAssignedUser", fields: [assignedUserId], references: [id])
   isRequired     Boolean     @default(true)
   stage          TenderStage?
+  // Copied from TaskTemplate.dateRequired on import — gates whether the task
+  // list shows a due-date picker for this task (upcoming dates only, editable
+  // until the task is completed).
+  dateRequired   Boolean     @default(false)
   dueDate        DateTime?
   order          Int         @default(0)
   status         TaskStatus  @default(PENDING)

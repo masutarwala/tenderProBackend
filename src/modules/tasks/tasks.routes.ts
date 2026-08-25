@@ -26,14 +26,21 @@ router.get(
   })
 );
 
-// Cross-tender view for the "Task List" menu — tasks assigned to the caller
-// (or every task, for Admin), across all tenders.
+// Cross-tender view for the "My Tasks" menu. Admin sees every task. Everyone
+// else sees: every task assigned to them directly, PLUS — for any tender
+// where they are the Bidder — every task on that tender regardless of
+// assignee (the Bidder can see the whole bid's task list like their own,
+// just not complete tasks that aren't theirs — that stays enforced by the
+// /complete endpoint below). A non-Bidder assignee only ever sees their own
+// tasks, on any tender.
 router.get(
   "/",
   asyncHandler(async (req: AuthedRequest, res) => {
     const tasks = await prisma.tenderTask.findMany({
-      where: req.user!.isAdmin ? {} : { assignedUserId: req.user!.userId },
-      include: { ...taskInclude, tender: { select: { id: true, tenderRefNo: true, title: true, tenderSeq: true } } },
+      where: req.user!.isAdmin
+        ? {}
+        : { OR: [{ assignedUserId: req.user!.userId }, { tender: { bidderId: req.user!.userId } }] },
+      include: { ...taskInclude, tender: { select: { id: true, tenderRefNo: true, title: true, tenderSeq: true, closingDate: true, stage: true } } },
       orderBy: [{ order: "asc" }, { createdAt: "desc" }],
     });
     res.json(tasks);
@@ -50,6 +57,14 @@ const createSchema = z.object({
   dueDate: z.coerce.date().nullable().optional(),
   order: z.number().int().optional(),
 });
+
+// Next order value for a manually-added task — appends to the end of the
+// tender's existing list rather than defaulting to 0 (which would collide
+// with whatever's already first).
+async function nextTaskOrder(tenderId: string): Promise<number> {
+  const last = await prisma.tenderTask.aggregate({ where: { tenderId }, _max: { order: true } });
+  return (last._max.order ?? -1) + 1;
+}
 
 async function assertTenderManageable(req: AuthedRequest, tenderId: string) {
   const tender = await prisma.tender.findUnique({ where: { id: tenderId }, select: { bidderId: true, salesExecId: true } });
@@ -69,15 +84,19 @@ router.post(
     const templates = await prisma.taskTemplate.findMany({ orderBy: [{ order: "asc" }, { createdAt: "asc" }] });
     if (templates.length === 0) throw new HttpError(400, "No task templates have been set up yet");
 
-    const now = new Date();
+    // `idx` is each template's actual position in the (order asc, createdAt
+    // asc) list above — always use it, not the raw template.order value,
+    // which defaults to 0 for every never-drag-reordered template and would
+    // otherwise collapse every imported task onto the same order.
     await prisma.tenderTask.createMany({
       data: templates.map((t, idx) => ({
         tenderId: req.params.tenderId,
         title: t.title,
         isRequired: t.isRequired,
         stage: t.stage,
-        order: t.order ?? idx,
-        dueDate: t.dueDaysOffset ? new Date(now.getTime() + t.dueDaysOffset * 86400000) : null,
+        order: idx,
+        dateRequired: t.dateRequired,
+        dueDate: null,
         assignedUserId: tender.bidderId,
       })),
     });
@@ -112,8 +131,9 @@ router.post(
   asyncHandler(async (req: AuthedRequest, res) => {
     await assertTenderManageable(req, req.params.tenderId);
     const data = createSchema.parse(req.body);
+    const order = data.order ?? (await nextTaskOrder(req.params.tenderId));
     const task = await prisma.tenderTask.create({
-      data: { tenderId: req.params.tenderId, ...data },
+      data: { tenderId: req.params.tenderId, ...data, order },
       include: taskInclude,
     });
     await recordAudit(req, "CREATE", "TenderTask", task.id, data);
@@ -143,6 +163,42 @@ router.patch(
       include: taskInclude,
     });
     await recordAudit(req, "UPDATE", "TenderTask", updated.id, data);
+    res.json(updated);
+  })
+);
+
+const dueDateSchema = z.object({ dueDate: z.coerce.date() });
+
+// Dedicated endpoint for setting/editing a dateRequired task's due date —
+// open to the assigned user (not just Admin/Bidder/Sales Exec), upcoming
+// dates only, and locked once the task is completed.
+router.patch(
+  "/:tenderId/:taskId/due-date",
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const task = await prisma.tenderTask.findUnique({ where: { id: req.params.taskId } });
+    if (!task || task.tenderId !== req.params.tenderId) throw new HttpError(404, "Task not found");
+    if (!task.dateRequired) throw new HttpError(400, "This task does not require a due date");
+    if (task.status === "COMPLETED") throw new HttpError(400, "Cannot change the due date of a completed task");
+
+    const tender = await prisma.tender.findUnique({ where: { id: req.params.tenderId }, select: { bidderId: true, salesExecId: true } });
+    if (!tender) throw new HttpError(404, "Tender not found");
+    if (!canManageTender(req.user!, tender) && task.assignedUserId !== req.user!.userId) {
+      throw new HttpError(403, "Only the assigned user or tender manager can set this task's due date");
+    }
+
+    const { dueDate } = dueDateSchema.parse(req.body);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (dueDate.getTime() < today.getTime()) {
+      throw new HttpError(400, "Due date must be today or a future date");
+    }
+
+    const updated = await prisma.tenderTask.update({
+      where: { id: task.id },
+      data: { dueDate },
+      include: taskInclude,
+    });
+    await recordAudit(req, "UPDATE", "TenderTask", updated.id, { dueDate });
     res.json(updated);
   })
 );

@@ -24,7 +24,7 @@ const upsertSchema = z.object({
   title: z.string().trim().min(1),
   isRequired: z.boolean().default(true),
   stage: stageEnum.nullable().optional(),
-  dueDaysOffset: z.number().int().nullable().optional(),
+  dateRequired: z.boolean().default(false),
   order: z.number().int().optional(),
 });
 
@@ -47,6 +47,12 @@ router.post(
   requireAdmin(),
   asyncHandler(async (req, res) => {
     const data = upsertSchema.parse(req.body);
+    // Append to the end of the list rather than defaulting to order 0, which
+    // would collide with (and sort ahead of) whatever's already first.
+    if (data.order === undefined) {
+      const last = await prisma.taskTemplate.aggregate({ _max: { order: true } });
+      data.order = (last._max.order ?? -1) + 1;
+    }
     const template = await prisma.taskTemplate.create({ data });
     res.status(201).json(template);
   })
