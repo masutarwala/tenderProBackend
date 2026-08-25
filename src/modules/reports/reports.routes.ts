@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../../lib/prisma";
 import { asyncHandler } from "../../middleware/errorHandler";
-import { authenticate } from "../../middleware/auth";
+import { authenticate, AuthedRequest } from "../../middleware/auth";
 
 const router = Router();
 router.use(authenticate);
@@ -26,8 +26,22 @@ const CLOSING_SOON_DAYS = 14;
 
 router.get(
   "/dashboard",
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req: AuthedRequest, res) => {
+    // Admin: unfiltered by default, optionally narrowed via bidderId /
+    // salesExecId query params (either role matching counts — an OR — when
+    // both are given). Everyone else: always forced to their own userId in
+    // either role, regardless of any query params — the whole dashboard is
+    // scoped to bids they're actually on.
+    const { bidderId, salesExecId } = req.query as { bidderId?: string; salesExecId?: string };
+    let where: any = {};
+    if (!req.user!.isAdmin) {
+      where = { OR: [{ bidderId: req.user!.userId }, { salesExecId: req.user!.userId }] };
+    } else if (bidderId || salesExecId) {
+      where = { OR: [...(bidderId ? [{ bidderId }] : []), ...(salesExecId ? [{ salesExecId }] : [])] };
+    }
+
     const tenders = await prisma.tender.findMany({
+      where,
       include: { outcomeRecord: true, customer: true },
     });
 

@@ -132,8 +132,13 @@ router.post(
     await assertTenderManageable(req, req.params.tenderId);
     const data = createSchema.parse(req.body);
     const order = data.order ?? (await nextTaskOrder(req.params.tenderId));
+    // A manually-added task with a due date is treated the same as an
+    // imported dateRequired one — otherwise My Tasks' Task Date column (and
+    // the editable date picker on the tender's own Task List) never picks it
+    // up, since both key off dateRequired rather than dueDate being set.
+    const dateRequired = data.dueDate != null;
     const task = await prisma.tenderTask.create({
-      data: { tenderId: req.params.tenderId, ...data, order },
+      data: { tenderId: req.params.tenderId, ...data, order, dateRequired },
       include: taskInclude,
     });
     await recordAudit(req, "CREATE", "TenderTask", task.id, data);
