@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "EmdStatus" ADD VALUE 'RECOVERED';

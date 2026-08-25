@@ -114,22 +114,29 @@ router.get(
       return false;
     };
 
-    // 1. All Paid EMD Bids with EMD > 0 (10 bids total - EMD Invested)
-    const allPaidTenders = tenders.filter(t => t.emdStatus === "PAID" && (t.emdAmount ?? 0) > 0);
+    // 1. All EMD Bids ever paid, RECOVERED included — it was still money paid
+    // out historically (10 bids total - EMD Invested)
+    const allPaidTenders = tenders.filter(t => (t.emdStatus === "PAID" || t.emdStatus === "RECOVERED") && (t.emdAmount ?? 0) > 0);
+
+    // "Recovered" (via EMD Status, or the older outcome-flow isEmdRecovered
+    // flag) is excluded from both the pending-recovery and active-paid
+    // views below — either signal means there's nothing left to track.
+    const isRecovered = (t: (typeof tenders)[number]) => t.emdStatus === "RECOVERED" || !!t.outcomeRecord?.isEmdRecovered;
+
     const emdInvestedTotal = {
       count: allPaidTenders.length,
       amount: allPaidTenders.reduce((sum, t) => sum + (t.emdAmount ?? 0), 0)
     };
 
     // 2. Closed Paid EMD Bids pending recovery (6 bids total - EMD Recover)
-    const dueTendersAll = allPaidTenders.filter(t => !t.outcomeRecord?.isEmdRecovered && isBidClosed(t));
+    const dueTendersAll = allPaidTenders.filter(t => !isRecovered(t) && isBidClosed(t));
     const emdRecoverTotal = {
       count: dueTendersAll.length,
       amount: dueTendersAll.reduce((sum, t) => sum + (t.emdAmount ?? 0), 0)
     };
 
     // 3. Active Paid EMD Bids (4 bids total)
-    const activePaidTenders = allPaidTenders.filter(t => !isBidClosed(t));
+    const activePaidTenders = allPaidTenders.filter(t => !isRecovered(t) && !isBidClosed(t));
     const emdActiveTotal = {
       count: activePaidTenders.length,
       amount: activePaidTenders.reduce((sum, t) => sum + (t.emdAmount ?? 0), 0)

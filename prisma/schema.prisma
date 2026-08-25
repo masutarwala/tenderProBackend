@@ -27,6 +27,7 @@ enum TenderStage {
 enum EmdStatus {
   PENDING
   PAID
+  RECOVERED
 }
 
 enum TenderStatus {
