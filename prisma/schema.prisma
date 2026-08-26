@@ -85,6 +85,30 @@ model User {
   assignedTasks    TenderTask[] @relation("TaskAssignedUser")
   completedTasks   TenderTask[] @relation("TaskCompletedBy")
   comments         Comment[]
+  loginActivity    LoginActivity[]
+}
+
+enum LoginActivityType {
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGOUT
+  SESSION_EXPIRED
+}
+
+// Admin-visible audit trail of auth events — successful logins, failed
+// attempts (wrong password or unknown email), normal logouts, and
+// server-forced logouts due to an expired JWT (kept distinct from a normal
+// LOGOUT so it's clear the user didn't click Logout themselves).
+model LoginActivity {
+  id        String            @id @default(cuid())
+  userId    String?
+  user      User?             @relation(fields: [userId], references: [id])
+  // Kept alongside userId (not just via the relation) so a failed attempt
+  // against an email with no matching account still leaves a readable trail.
+  email     String
+  type      LoginActivityType
+  ipAddress String?
+  createdAt DateTime          @default(now())
 }
 
 // ============ TRANSACTIONAL ============
@@ -217,15 +241,18 @@ model Comment {
 // Generic per-tender document, storage delegated to storage adapter (local
 // disk in dev; swaps to SharePoint/Microsoft Graph in production — see
 // storageAdapter.ts). Two tabs only: To Client / From Client.
+// A document is now just a link the user pastes in — no file storage. Legacy
+// rows from the old Cloudinary-upload flow keep their fileName/publicId/etc.,
+// but nothing new is ever written to those columns.
 model Document {
   id           String       @id @default(cuid())
   tenderId     String
   tender       Tender       @relation(fields: [tenderId], references: [id], onDelete: Cascade)
   side         DocumentSide
   title        String?
-  fileName     String
+  fileName     String?
   url          String
-  publicId     String
+  publicId     String?
   resourceType String?
   mimeType     String?
   sizeBytes    Int?

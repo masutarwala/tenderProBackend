@@ -13,6 +13,7 @@ import commentsRoutes from "./modules/comments/comments.routes";
 import outcomesRoutes from "./modules/outcomes/outcomes.routes";
 import reportsRoutes from "./modules/reports/reports.routes";
 import { customersRouter } from "./modules/customers/customers.routes";
+import loginActivityRoutes from "./modules/loginActivity/loginActivity.routes";
 
 const app = express();
 
@@ -36,6 +37,7 @@ app.use("/api/comments", commentsRoutes);
 app.use("/api/outcomes", outcomesRoutes);
 app.use("/api/reports", reportsRoutes);
 app.use("/api/customers", customersRouter);
+app.use("/api/login-activity", loginActivityRoutes);
 
 app.use(errorHandler);
 
