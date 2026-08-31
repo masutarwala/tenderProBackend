@@ -48,13 +48,14 @@ router.get(
     const now = new Date();
     const daysUntil = (d: Date | null) => (d ? Math.ceil((d.getTime() - now.getTime()) / 86400000) : null);
 
-    // Value calculation rules:
-    // Evaluation/Preparation -> Bid Worth (tenderValue)
-    // Submission -> Bid Value (bidValue)
+    // Single "how much is this bid worth" figure, used for every amount
+    // below regardless of stage: Win Value if the outcome has been
+    // recorded, else Submit Value (bidValue), else Estimate Value
+    // (tenderValue). Must stay in sync with the equivalent cascade in
+    // tenderpro_frontend/src/utils/bidWorth.ts.
     const bidAmount = (t: (typeof tenders)[number]) => {
-      if (t.stage === "SUBMISSION") {
-        return t.bidValue ?? 0;
-      }
+      if (t.outcomeRecord?.winningBidAmount != null) return t.outcomeRecord.winningBidAmount;
+      if (t.bidValue != null) return t.bidValue;
       return t.tenderValue ?? 0;
     };
 
@@ -67,7 +68,7 @@ router.get(
     const lost = tenders.filter((t) => t.outcomeRecord?.outcome === "LOST");
     const dropped = tenders.filter((t) => t.outcomeRecord?.outcome === "DROPPED");
     const winRate = won.length + lost.length > 0 ? (won.length / (won.length + lost.length)) * 100 : null;
-    const wonValue = won.reduce((s, t) => s + (t.outcomeRecord?.winningBidAmount ?? bidAmount(t)), 0);
+    const wonValue = won.reduce((s, t) => s + bidAmount(t), 0);
     const closingSoon = activeTenders.filter((t) => {
       const d = daysUntil(t.closingDate);
       return d !== null && d >= 0 && d <= CLOSING_SOON_DAYS;
@@ -75,16 +76,17 @@ router.get(
 
     // Funnel — every tender starts at Evaluation, so each later stage is a
     // subset of tenders that reached at least that far in the pipeline.
-    const funnelStage = (label: string, list: typeof tenders, valueFn: (t: (typeof tenders)[number]) => number) => ({
+    // Won is a separate outcome-based bucket, not a pipeline stage.
+    const funnelStage = (label: string, list: typeof tenders) => ({
       label,
       count: list.length,
-      value: list.reduce((s, t) => s + valueFn(t), 0),
+      value: list.reduce((s, t) => s + bidAmount(t), 0),
     });
     const funnel = [
-      funnelStage("Evaluation", activeTenders.filter((t) => t.stage === "EVALUATION"), (t) => t.tenderValue ?? 0),
-      funnelStage("Preparation", activeTenders.filter((t) => t.stage === "PREPARATION"), (t) => t.tenderValue ?? 0),
-      funnelStage("Submission", activeTenders.filter((t) => t.stage === "SUBMISSION"), (t) => t.bidValue ?? 0),
-      funnelStage("Won", won, (t) => t.outcomeRecord?.winningBidAmount ?? 0),
+      funnelStage("Evaluation", activeTenders.filter((t) => t.stage === "EVALUATION")),
+      funnelStage("Preparation", activeTenders.filter((t) => t.stage === "PREPARATION")),
+      funnelStage("Submission", activeTenders.filter((t) => t.stage === "SUBMISSION")),
+      funnelStage("Won", won),
     ];
 
     // Alerts: closing soon, not yet closed

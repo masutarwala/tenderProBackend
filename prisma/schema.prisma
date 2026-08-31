@@ -22,6 +22,13 @@ enum TenderStage {
   EVALUATION
   PREPARATION
   SUBMISSION
+  // Terminal — set automatically the moment any outcome (Won/Lost/No Go/
+  // Dropped by us/Withdrawn by client) is recorded. Never settable through
+  // the normal Evaluation -> Preparation -> Submission stage-status flow;
+  // only the outcomes endpoint sets it. The pipeline stage the tender was
+  // actually at when it closed is preserved on TenderTask/Comment rows and
+  // in the outcome's own history — this just marks the tender itself done.
+  CLOSED
 }
 
 enum EmdStatus {
@@ -125,6 +132,10 @@ model Tender {
   tenderType TenderType
   stage      TenderStage  @default(EVALUATION)
   status     TenderStatus @default(PENDING)
+  // Set once, from Submission, when the bid is marked as having gone to
+  // auction — a logged note only, doesn't close the tender or change
+  // stage/status. Win/Lost remain available afterward to actually close it.
+  auctionMarked Boolean @default(false)
 
   publishedDate  DateTime?
   closingDate    DateTime?

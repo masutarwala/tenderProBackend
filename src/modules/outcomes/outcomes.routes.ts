@@ -54,9 +54,12 @@ router.post(
       create: { tenderId: tender.id, ...data, recordedById: req.user!.userId },
     });
 
+    // Recording any outcome closes the tender out — stage moves to CLOSED
+    // regardless of which pipeline stage it was actually recorded from
+    // (the comment below still logs that real stage for history).
     await prisma.tender.update({
       where: { id: tender.id },
-      data: { status: "COMPLETED" },
+      data: { status: "COMPLETED", stage: "CLOSED" },
     });
 
     if (comment) {

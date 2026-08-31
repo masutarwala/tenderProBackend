@@ -146,7 +146,7 @@ const stageStatusSchema = z.object({
 // Evaluation -> Preparation -> Submission, forward-only. The stage never
 // moves backward once advanced, and a tender with a recorded Outcome (Won,
 // Lost, or Dropped via "No Go") is closed — no further stage changes at all.
-const STAGE_ORDER = { EVALUATION: 0, PREPARATION: 1, SUBMISSION: 2 } as const;
+const STAGE_ORDER = { EVALUATION: 0, PREPARATION: 1, SUBMISSION: 2, CLOSED: 3 } as const;
 
 // Manual Stage/Status change — Admin or the assigned Bidder/Sales Executive
 // only. No automatic gating beyond forward-only ordering; every change
@@ -218,6 +218,43 @@ router.post(
       },
     });
     await recordAudit(req, "UPDATE", "Tender", updated.id, { stage, status });
+    res.json(withTenderId(updated));
+  })
+);
+
+const auctionSchema = z.object({ comment: z.string().trim().min(1, "A comment is required") });
+
+// Marks a Submission-stage bid as having gone to auction — logged as a
+// comment and flagged via auctionMarked, but stage/status don't change, and
+// it's one-way (can't un-mark, can't mark twice). Win/Lost still close the
+// tender normally afterward.
+router.post(
+  "/:id/auction",
+  asyncHandler(async (req: AuthedRequest, res) => {
+    const tender = await prisma.tender.findUnique({ where: { id: req.params.id } });
+    if (!tender) throw new HttpError(404, "Tender not found");
+    if (!canUpdateTenderStatus(req.user!, tender)) {
+      throw new HttpError(403, "Only Admin or the assigned Bidder can mark this bid for auction");
+    }
+    if (tender.stage !== "SUBMISSION") {
+      throw new HttpError(400, "Auction can only be marked once the tender has reached Submission");
+    }
+    if (tender.auctionMarked) {
+      throw new HttpError(400, "This bid has already been marked for auction");
+    }
+    const { comment } = auctionSchema.parse(req.body);
+
+    const updated = await prisma.tender.update({ where: { id: tender.id }, data: { auctionMarked: true } });
+    await prisma.comment.create({
+      data: {
+        tenderId: tender.id,
+        userId: req.user!.userId,
+        message: `Marked for Auction: ${comment}`,
+        stage: tender.stage,
+        status: tender.status,
+      },
+    });
+    await recordAudit(req, "UPDATE", "Tender", updated.id, { auctionMarked: true });
     res.json(withTenderId(updated));
   })
 );
