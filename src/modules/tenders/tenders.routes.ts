@@ -131,6 +131,14 @@ router.patch(
       throw new HttpError(403, "Only Admin or the assigned Bidder/Sales Executive can edit this tender");
     }
     const data = createSchema.partial().parse(req.body);
+    // Submit Value is required to reach Submission in the first place (see
+    // the stage-status gate below) — once there, or already closed, it can
+    // still be edited, just never cleared or dropped below 1.
+    if ((tender.stage === "SUBMISSION" || tender.stage === "CLOSED") && "bidValue" in data) {
+      if (data.bidValue == null || data.bidValue < 1) {
+        throw new HttpError(400, "Submit Value is required and can't be less than 1 once the bid has reached Submission");
+      }
+    }
     const updated = await prisma.tender.update({ where: { id: req.params.id }, data });
     await recordAudit(req, "UPDATE", "Tender", updated.id, data);
     res.json(withTenderId(updated));
