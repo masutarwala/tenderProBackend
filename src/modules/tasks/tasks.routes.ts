@@ -37,9 +37,7 @@ router.get(
   "/",
   asyncHandler(async (req: AuthedRequest, res) => {
     const tasks = await prisma.tenderTask.findMany({
-      where: req.user!.isAdmin
-        ? {}
-        : { OR: [{ assignedUserId: req.user!.userId }, { tender: { bidderId: req.user!.userId } }] },
+      where: { OR: [{ assignedUserId: req.user!.userId }, { tender: { bidderId: req.user!.userId } }] },
       include: { ...taskInclude, tender: { select: { id: true, tenderRefNo: true, title: true, tenderSeq: true, closingDate: true, stage: true } } },
       orderBy: [{ order: "asc" }, { createdAt: "desc" }],
     });
