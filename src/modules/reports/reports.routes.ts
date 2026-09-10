@@ -33,11 +33,28 @@ router.get(
     // either role, regardless of any query params — the whole dashboard is
     // scoped to bids they're actually on.
     const { bidderId, salesExecId } = req.query as { bidderId?: string; salesExecId?: string };
+    
+    const kamalUser = await prisma.user.findUnique({ where: { email: "kamal@swansol.com" } });
+    
     let where: any = {};
     if (!req.user!.isAdmin) {
       where = { OR: [{ bidderId: req.user!.userId }, { salesExecId: req.user!.userId }] };
-    } else if (bidderId || salesExecId) {
-      where = { OR: [...(bidderId ? [{ bidderId }] : []), ...(salesExecId ? [{ salesExecId }] : [])] };
+    } else {
+      let conditions = [];
+      if (bidderId || salesExecId) {
+        conditions.push({ OR: [...(bidderId ? [{ bidderId }] : []), ...(salesExecId ? [{ salesExecId }] : [])] });
+      }
+      if (kamalUser) {
+        conditions.push({
+          AND: [
+            { bidderId: { not: kamalUser.id } },
+            { salesExecId: { not: kamalUser.id } }
+          ]
+        });
+      }
+      if (conditions.length > 0) {
+        where = { AND: conditions };
+      }
     }
 
     const tenders = await prisma.tender.findMany({
